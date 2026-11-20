@@ -199,7 +199,7 @@ Screen address of any cell: `offset = (row * 80 + col) * 2`, with `ES = 0xB800`.
 ### 1. Assemble
 
 ```
-nasm step1_track.asm -o step1.com
+nasm train.asm -o train.com
 ```
 
 ### 2. Run in DOSBox
@@ -222,7 +222,7 @@ The screen clears and the full track appears. Track lines are **grey**, switch n
 SwitchYard/
 ├── assets/
 │   └── banner.svg          animated README banner
-├── step1_track.asm         track table + clrscr + drawtrack
+├── train.asm         track table + clrscr + drawtrack
 └── README.md
 ```
 
@@ -257,8 +257,8 @@ SwitchYard/
 | Role | Name |
 | ---- | ---- |
 | Developer | Eman Fatima ([@l253010](https://github.com/l253010)) |
+| Developer | Amna Azeem ([@amnaazeem-code](https://github.com/amnaazeem-code)) |
 
-<!-- add your teammates here if this is a group project -->
 
 ```
         ┌────────────────────────────────────────────────┐
