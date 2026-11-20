@@ -15,7 +15,7 @@
 ;   +7 letter      'A'-'D' on a station, 0 everywhere else
 ; the node number is its position in the table, first node is 0.
 ; example: node 6 starts at track + 6*8 = track + 48
-;kjj
+;
 ; values used in the table:
 ;   0xff = no next node / not a switch
 ;   0xc4 = horizontal line char    0xb3 = vertical line char
