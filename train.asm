@@ -283,7 +283,21 @@ msgscore:     db 'Score: ', 0       ; status bar text
 msgmist:      db 'Mistakes: ', 0    ; status bar text
 msgtime:      db 'Time: ', 0        ; status bar text
 
+; ---------------------------------------------------------------
+; step 3 data: interrupt related variables
+; ---------------------------------------------------------------
+tickcount:    dw 0                  ; ticks waiting to be used by the game
+                                    ; (timer ISR adds 1, main loop takes 1)
+elapsedticks: dw 0                  ; total ticks since the game started
+                                    ; (only grows, used for the clock)
+redrawflag:   dw 0                  ; 1 = a switch was toggled, so the
+                                    ; main loop must redraw the switches
+quitflag:     dw 0                  ; 1 = Esc was pressed, leave the game
+mode:         dw 1                  ; 1 = single player, 2 = two player co-op
+oldtimer:     dd 0                  ; old INT 08h vector (offset then segment)
+oldkb:        dd 0                  ; old INT 09h vector (offset then segment)
 
+;-------step 3-----
 
 ;----step 2-----
 ; subroutine to clear the screen
@@ -780,17 +794,202 @@ drawstatus:   push ax
               pop  ax
               ret
 
+ ;-------------step 2-------
+ ;-------------step 3-------
 
-start:        call   clrscr             ; clear the screen
+ ; ===============================================================
+; timer interrupt service routine (hooked on INT 08h)
+; the timer chip generates this interrupt about 18.2 times a second
+; an ISR must be SHORT, so it only adds 1 to two counters
+; ===============================================================
+timer:        push ax
+
+              inc  word [cs:tickcount]    ; one more tick for the game
+              inc  word [cs:elapsedticks] ; one more tick on the clock
+                                          ; [cs:...] is used because ds
+                                          ; is not known inside an ISR
+
+              mov  al, 0x20
+              out  0x20, al               ; tell the PIC the interrupt
+                                          ; is finished (EOI)
+
+              pop  ax
+              iret                        ; return from interrupt
+
+; ===============================================================
+; keyboard interrupt service routine (hooked on INT 09h)
+; runs every time a key is pressed OR released
+; scan codes of the keys we care about:
+;     1 = 0x02   2 = 0x03   3 = 0x04   4 = 0x05
+;     J = 0x24   K = 0x25   Esc = 0x01
+; when a key is RELEASED the keyboard sends the same code with bit 7
+; set (code + 0x80), so a release never matches our press codes
+; and is ignored automatically
+; bx is used as the number of the switch to toggle (0 to 3)
+; ===============================================================
+kbisr:        push ax
+              push bx
+
+              in   al, 0x60               ; read the scan code from the
+                                          ; keyboard port
+
+              cmp  al, 0x02               ; is it key 1?
+              je   isw0                   ; yes, toggle switch 1
+              cmp  al, 0x03               ; is it key 2?
+              je   isw1                   ; yes, toggle switch 2
+              cmp  al, 0x04               ; is it key 3?
+              je   isw2single             ; yes, check the mode first
+              cmp  al, 0x05               ; is it key 4?
+              je   isw3single             ; yes, check the mode first
+              cmp  al, 0x24               ; is it key J?
+              je   isw2coop               ; yes, check the mode first
+              cmp  al, 0x25               ; is it key K?
+              je   isw3coop               ; yes, check the mode first
+              cmp  al, 0x01               ; is it Esc?
+              je   iquit                  ; yes, ask the game to stop
+              jmp  nomatch                ; any other key, not ours
+
+isw0:         mov  bx, 0                  ; switch 1 has number 0
+              jmp  dotoggle
+isw1:         mov  bx, 1                  ; switch 2 has number 1
+              jmp  dotoggle
+
+isw2single:   cmp  word [cs:mode], 1      ; key 3 works in single player
+              jne  nomatch                ; co-op, so ignore this key
+              mov  bx, 2                  ; switch 3 has number 2
+              jmp  dotoggle
+isw3single:   cmp  word [cs:mode], 1      ; key 4 works in single player
+              jne  nomatch                ; co-op, so ignore this key
+              mov  bx, 3                  ; switch 4 has number 3
+              jmp  dotoggle
+
+isw2coop:     cmp  word [cs:mode], 2      ; J works in co-op only
+              jne  nomatch                ; single player, ignore this key
+              mov  bx, 2                  ; J toggles switch 3
+              jmp  dotoggle
+isw3coop:     cmp  word [cs:mode], 2      ; K works in co-op only
+              jne  nomatch                ; single player, ignore this key
+              mov  bx, 3                  ; K toggles switch 4
+              jmp  dotoggle
+
+dotoggle:     xor  byte [cs:switchstate+bx], 1 ; flip 0 to 1, or 1 to 0
+              mov  word [cs:redrawflag], 1     ; tell main loop to redraw
+              jmp  kbexit
+
+iquit:        mov  word [cs:quitflag], 1  ; tell main loop to quit
+              jmp  kbexit
+
+nomatch:      pop  bx                     ; not our key, give back the
+              pop  ax                     ; registers and let the old
+              jmp  far [cs:oldkb]         ; ISR handle it (chaining)
+
+kbexit:       mov  al, 0x20
+              out  0x20, al               ; end of interrupt for the PIC
+
+              pop  bx
+              pop  ax
+              iret                        ; return from interrupt
+
+; ===============================================================
+; subroutine hookints
+; saves the old INT 08h and INT 09h vectors, then installs ours
+; the interrupt vector table starts at 0000:0000
+; vector n lives at address n*4: offset (2 bytes), segment (2 bytes)
+; ===============================================================
+hookints:     push ax
+              push es
+
+              xor  ax, ax
+              mov  es, ax                 ; es points to the IVT base
+
+              mov  ax, [es:8*4]           ; old timer offset
+              mov  [oldtimer], ax         ; save it
+              mov  ax, [es:8*4+2]         ; old timer segment
+              mov  [oldtimer+2], ax       ; save it
+
+              mov  ax, [es:9*4]           ; old keyboard offset
+              mov  [oldkb], ax            ; save it
+              mov  ax, [es:9*4+2]         ; old keyboard segment
+              mov  [oldkb+2], ax          ; save it
+
+              cli                         ; stop interrupts while we
+                                          ; change the table
+              mov  word [es:8*4], timer   ; our timer offset
+              mov  [es:8*4+2], cs         ; our timer segment
+              mov  word [es:9*4], kbisr   ; our keyboard offset
+              mov  [es:9*4+2], cs         ; our keyboard segment
+              sti                         ; interrupts allowed again
+
+              pop  es
+              pop  ax
+              ret
+
+; ===============================================================
+; subroutine unhookints
+; puts the old INT 08h and INT 09h vectors back
+; MUST be called before returning to DOS, and before hooking again
+; on replay, otherwise DOS keeps pointing at code that is gone
+; ===============================================================
+unhookints:   push ax
+              push es
+
+              xor  ax, ax
+              mov  es, ax                 ; es points to the IVT base
+
+              cli                         ; stop interrupts while we
+                                          ; change the table
+              mov  ax, [oldtimer]         ; saved timer offset
+              mov  [es:8*4], ax           ; put it back
+              mov  ax, [oldtimer+2]       ; saved timer segment
+              mov  [es:8*4+2], ax         ; put it back
+
+              mov  ax, [oldkb]            ; saved keyboard offset
+              mov  [es:9*4], ax           ; put it back
+              mov  ax, [oldkb+2]          ; saved keyboard segment
+              mov  [es:9*4+2], ax         ; put it back
+              sti                         ; interrupts allowed again
+
+              pop  es
+              pop  ax
+              ret
+ ;-------------step 3-------
+ ;-------------start-------
+
+ start:        call   clrscr             ; clear the screen
               call   drawtrack          ; draw the track from the table
               call   drawlabels         ; Entry 1, Entry 2, Station A-D
               call   drawswitches       ; switch boxes and route colours
               call   drawstatus         ; status bar on the last row
 
-              mov    ah, 0              ; wait for a key so we can look
-              int    0x16               ; at the screen
+              call   hookints           ; install our timer and keyboard ISRs
+
+; ---------------------------------------------------------------
+; main loop: the ISRs only set flags and counters,
+; the real work (drawing) is done here
+; ---------------------------------------------------------------
+mainloop:     cmp    word [redrawflag], 0 ; was a switch toggled?
+              je     noredraw           ; no, skip the redraw
+              mov    word [redrawflag], 0 ; yes, clear the flag first
+              call   drawswitches       ; redraw only the switches
+
+noredraw:     cmp    word [tickcount], 0  ; is there a tick waiting?
+              je     notick             ; no, skip
+              dec    word [tickcount]   ; yes, use up one tick
+              ; (step 4: spawn and move the trains will go right here)
+
+notick:       mov    ax, [elapsedticks] ; total ticks so far
+              xor    dx, dx             ; zero the upper half of dividend
+              mov    bx, 18             ; timer ticks about 18 times a second
+              div    bx                 ; ax = seconds
+              cmp    ax, [seconds]      ; did the second number change?
+              je     nosecchange        ; no, nothing to redraw
+              mov    [seconds], ax      ; yes, remember the new seconds
+              call   drawstatus         ; redraw the status bar
+
+nosecchange:  cmp    word [quitflag], 0 ; was Esc pressed?
+              je     mainloop           ; no, keep running the loop
+
+              call   unhookints         ; restore both old vectors
 
               mov    ax, 0x4c00         ; terminate program
               int    0x21
-
-;----step 2----
