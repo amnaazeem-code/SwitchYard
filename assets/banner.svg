@@ -26,7 +26,7 @@
 
   <!-- prompt line -->
   <g font-family="Courier New, Consolas, monospace" font-size="15">
-    <text x="30" y="108" fill="#9B86CF">C:\&gt; nasm step1_track.asm -o step1.com</text>
+    <text x="30" y="108" fill="#9B86CF">C:\&gt; nasm train.asm -o train.com</text>
     <text x="30" y="130" fill="#B39DDB">C:\&gt; step1<tspan fill="#E6C84A"> </tspan></text>
     <rect x="123" y="117" width="9" height="15" fill="#E6C84A">
       <animate attributeName="opacity" values="1;0" calcMode="discrete" dur="1s" repeatCount="indefinite"/>
