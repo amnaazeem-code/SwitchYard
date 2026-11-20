@@ -261,6 +261,31 @@ switchstate:    db 0, 0, 0, 0
 ;                normal switch station entrance
 attrtable:      db 0x07, 0x0e, 0x0a, 0x0b ; grey, yellow, green, cyan
 
+;----step 2-----
+; ---------------------------------------------------------------
+; step 2 data: numbers shown on the status bar
+; ---------------------------------------------------------------
+score:        dw 0                  ; correct deliveries so far
+mistakes:     dw 0                  ; wrong deliveries so far
+seconds:      dw 0                  ; elapsed time in seconds
+
+; ---------------------------------------------------------------
+; step 2 data: text strings, every string ends with a zero byte
+; so that printstr knows where the string stops
+; ---------------------------------------------------------------
+lblentry1:    db 'Entry 1', 0       ; label drawn above entrance 1
+lblentry2:    db 'Entry 2', 0       ; label drawn above entrance 2
+lblstA:       db 'Station A', 0     ; label drawn next to station A
+lblstB:       db 'Station B', 0     ; label drawn next to station B
+lblstC:       db 'Station C', 0     ; label drawn next to station C
+lblstD:       db 'Station D', 0     ; used twice, both D stations
+msgscore:     db 'Score: ', 0       ; status bar text
+msgmist:      db 'Mistakes: ', 0    ; status bar text
+msgtime:      db 'Time: ', 0        ; status bar text
+
+
+
+;----step 2-----
 ; subroutine to clear the screen
 clrscr:         push es
                 push ax
@@ -324,11 +349,448 @@ nextnode:       mov    al, [si]           ; load the row of this node
                 pop    es
                 ret
 
-start:          call   clrscr             ; clear the screen
-                call   drawtrack          ; draw the track from the table
 
-                mov    ah, 0              ; wait for a key so we can look
-                int    0x16               ; at the screen
+;----step 2---
 
-                mov    ax, 0x4c00         ; terminate program
-                int    0x21
+; ===============================================================
+; subroutine putchar
+; puts ONE character with ONE attribute at (row, col) on screen
+; parameters pushed in this order: row, col, char, attribute
+;   [bp+10] = row    [bp+8] = col    [bp+6] = char    [bp+4] = attribute
+; screen offset formula: offset = (row * 80 + col) * 2
+; ===============================================================
+putchar:      push bp
+              mov  bp, sp           ; bp now points to our stack frame
+              push es               ; save every register we are going
+              push ax               ; to change, so the caller does
+              push bx               ; not lose its values
+              push dx
+              push di
+
+              mov  ax, 0xb800
+              mov  es, ax           ; es points to video memory
+
+              mov  ax, [bp+10]      ; ax = row
+              mov  bx, 80           ; 80 columns in every row
+              mul  bx               ; ax = row * 80 (dx is destroyed,
+                                    ; that is why we saved it above)
+              add  ax, [bp+8]       ; ax = row * 80 + col
+              shl  ax, 1            ; multiply by 2, every screen
+                                    ; location takes 2 bytes
+              mov  di, ax           ; di = offset inside video memory
+
+              mov  al, [bp+6]       ; al = character (low byte of word)
+              mov  ah, [bp+4]       ; ah = attribute (colour)
+              mov  [es:di], ax      ; write char and attribute together
+
+              pop  di
+              pop  dx
+              pop  bx
+              pop  ax
+              pop  es
+              pop  bp
+              ret  8                ; 4 parameters x 2 bytes = 8 bytes
+
+; ===============================================================
+; subroutine printstr
+; prints a zero terminated string at (x, y) on screen
+; parameters pushed in this order: x, y, attribute, string offset
+;   [bp+10] = x (col)   [bp+8] = y (row)
+;   [bp+6]  = attribute [bp+4] = offset of the string
+; ===============================================================
+printstr:     push bp
+              mov  bp, sp
+              push es
+              push ax
+              push bx
+              push dx
+              push si
+              push di
+
+              mov  ax, 0xb800
+              mov  es, ax           ; es points to video memory
+
+              mov  ax, [bp+8]       ; ax = y (row)
+              mov  bx, 80
+              mul  bx               ; ax = row * 80
+              add  ax, [bp+10]      ; ax = row * 80 + x
+              shl  ax, 1            ; 2 bytes per screen location
+              mov  di, ax           ; di = where the first char goes
+
+              mov  si, [bp+4]       ; si points to the first char
+              mov  ah, [bp+6]       ; ah = attribute for every char
+
+psnext:       mov  al, [si]         ; load one character of the string
+              cmp  al, 0            ; is it the zero at the end?
+              je   psend            ; yes, string finished
+              mov  [es:di], ax      ; no, print char and attribute
+              add  di, 2            ; move to the next screen location
+              inc  si               ; move to the next char of string
+              jmp  psnext           ; repeat for the next char
+
+psend:        pop  di
+              pop  si
+              pop  dx
+              pop  bx
+              pop  ax
+              pop  es
+              pop  bp
+              ret  8                ; 4 parameters x 2 bytes = 8 bytes
+
+; ===============================================================
+; subroutine printnum
+; prints a number with a FIXED count of digits (leading zeros)
+; fixed width means old digits never stay on screen
+; parameters pushed in this order: x, y, attribute, number, digits
+;   [bp+12] = x   [bp+10] = y   [bp+8] = attribute
+;   [bp+6]  = the number to print   [bp+4] = how many digits
+; ===============================================================
+printnum:     push bp
+              mov  bp, sp
+              push es
+              push ax
+              push bx
+              push cx
+              push dx
+              push di
+
+              mov  ax, 0xb800
+              mov  es, ax           ; es points to video memory
+
+              mov  ax, [bp+10]      ; ax = y (row)
+              mov  bx, 80
+              mul  bx               ; ax = row * 80
+              add  ax, [bp+12]      ; ax = row * 80 + x
+              shl  ax, 1            ; 2 bytes per screen location
+              mov  di, ax           ; di = where the first digit goes
+
+              mov  ax, [bp+6]       ; ax = the number to print
+              mov  bx, 10           ; we divide by 10 again and again
+              mov  cx, [bp+4]       ; cx = number of digits to make
+
+pndivide:     xor  dx, dx           ; zero the upper half of dividend
+              div  bx               ; ax = ax / 10, dx = remainder
+              add  dl, 0x30         ; turn the digit into its ascii char
+              push dx               ; save the digit on the stack
+              loop pndivide         ; repeat cx times (cx goes down)
+
+              mov  cx, [bp+4]       ; cx = number of digits again
+              mov  ah, [bp+8]       ; ah = attribute for every digit
+
+pnprint:      pop  dx               ; digits come out in correct order
+              mov  al, dl           ; al = the digit char
+              mov  [es:di], ax      ; print digit and attribute
+              add  di, 2            ; next screen location
+              loop pnprint          ; repeat for all digits
+
+              pop  di
+              pop  dx
+              pop  cx
+              pop  bx
+              pop  ax
+              pop  es
+              pop  bp
+              ret  10               ; 5 parameters x 2 bytes = 10 bytes
+
+; ===============================================================
+; subroutine drawnode
+; draws ONE node of the track table using putchar
+; the row, col and char are read from the table, only the
+; attribute (colour) is given by the caller
+; parameters pushed in this order: node number, attribute
+;   [bp+6] = node number    [bp+4] = attribute
+; ===============================================================
+drawnode:     push bp
+              mov  bp, sp
+              push ax
+              push bx
+              push dx
+              push si
+
+              mov  ax, [bp+6]       ; ax = node number
+              mov  bx, 8            ; every node is 8 bytes
+              mul  bx               ; ax = node number * 8
+              add  ax, track        ; ax = address of this node
+              mov  si, ax           ; si points to the node
+
+              mov  al, [si]         ; al = row of the node
+              xor  ah, ah           ; make it a full 16 bit word
+              push ax               ; parameter 1 of putchar: row
+              mov  al, [si+1]       ; al = col of the node
+              xor  ah, ah
+              push ax               ; parameter 2 of putchar: col
+              mov  al, [si+2]       ; al = char of the node
+              xor  ah, ah
+              push ax               ; parameter 3 of putchar: char
+              push word [bp+4]      ; parameter 4 of putchar: attribute
+              call putchar          ; draw it
+
+              pop  si
+              pop  dx
+              pop  bx
+              pop  ax
+              pop  bp
+              ret  4                ; 2 parameters x 2 bytes = 4 bytes
+
+; ===============================================================
+; subroutine drawlabels
+; writes the names Entry 1, Entry 2 and Station A, B, C, D
+; takes no parameters. only needs to be called once per game
+; each printstr call needs: x, y, attribute, string offset
+; ===============================================================
+drawlabels:   push ax
+
+              ; ---- Entry 1 label, above the arrow on row 5
+              mov  ax, 1
+              push ax               ; x = 1
+              mov  ax, 4
+              push ax               ; y = 4
+              mov  ax, 0x0b
+              push ax               ; attribute = light cyan
+              mov  ax, lblentry1
+              push ax               ; offset of the string
+              call printstr
+
+              ; ---- Entry 2 label, above the arrow on row 11
+              mov  ax, 1
+              push ax               ; x = 1
+              mov  ax, 10
+              push ax               ; y = 10
+              mov  ax, 0x0b
+              push ax
+              mov  ax, lblentry2
+              push ax
+              call printstr
+
+              ; ---- Station A label, to the right of A (row 3)
+              mov  ax, 54
+              push ax               ; x = 54
+              mov  ax, 3
+              push ax               ; y = 3
+              mov  ax, 0x0a
+              push ax               ; attribute = light green
+              mov  ax, lblstA
+              push ax
+              call printstr
+
+              ; ---- Station B label (row 5)
+              mov  ax, 54
+              push ax
+              mov  ax, 5
+              push ax
+              mov  ax, 0x0a
+              push ax
+              mov  ax, lblstB
+              push ax
+              call printstr
+
+              ; ---- Station C label (row 8)
+              mov  ax, 54
+              push ax
+              mov  ax, 8
+              push ax
+              mov  ax, 0x0a
+              push ax
+              mov  ax, lblstC
+              push ax
+              call printstr
+
+              ; ---- first Station D label (row 10)
+              mov  ax, 54
+              push ax
+              mov  ax, 10
+              push ax
+              mov  ax, 0x0a
+              push ax
+              mov  ax, lblstD
+              push ax
+              call printstr
+
+              ; ---- second Station D label (row 13)
+              mov  ax, 54
+              push ax
+              mov  ax, 13
+              push ax
+              mov  ax, 0x0a
+              push ax
+              mov  ax, lblstD
+              push ax
+              call printstr
+
+              pop  ax
+              ret
+
+; ===============================================================
+; subroutine drawswitches
+; for every switch: draws the number box, and shows which route
+; is selected by colouring the FIRST cell of each exit:
+;     green (0x0a) = route is selected (open)
+;     red   (0x04) = route is not selected (closed)
+; call this once at start, and again ONLY when a switch is toggled
+; takes no parameters, it reads switchnode and switchstate
+; ===============================================================
+drawswitches: push ax
+              push bx
+              push cx
+              push si
+
+              xor  bx, bx           ; bx = switch number, start with 0
+
+nextswitch:   ; ---- step 1: draw the switch box (yellow on blue)
+              xor  ah, ah
+              mov  al, [switchnode+bx] ; al = node number of this switch
+              push ax               ; parameter 1 of drawnode: node
+              mov  ax, 0x1e
+              push ax               ; parameter 2 of drawnode: attribute
+              call drawnode
+
+              ; ---- step 2: find the switch node in the table
+              xor  ah, ah
+              mov  al, [switchnode+bx] ; al = node number again
+              mov  cl, 3
+              shl  ax, cl           ; ax = node number * 8
+              add  ax, track        ; ax = address of the switch node
+              mov  si, ax           ; si points to the switch node
+
+              ; ---- step 3: exit 0 (next0 is at byte +4 of the node)
+              xor  ah, ah
+              mov  al, [si+4]       ; al = node where state 0 goes
+              push ax               ; parameter 1 of drawnode
+              mov  ax, 0x04         ; assume red (closed)
+              cmp  byte [switchstate+bx], 0 ; is this switch in state 0?
+              jne  exit0done        ; no, so exit 0 stays red
+              mov  ax, 0x0a         ; yes, exit 0 is open so green
+exit0done:    push ax               ; parameter 2 of drawnode
+              call drawnode
+
+              ; ---- step 4: exit 1 (next1 is at byte +5 of the node)
+              xor  ah, ah
+              mov  al, [si+5]       ; al = node where state 1 goes
+              push ax               ; parameter 1 of drawnode
+              mov  ax, 0x04         ; assume red (closed)
+              cmp  byte [switchstate+bx], 1 ; is this switch in state 1?
+              jne  exit1done        ; no, so exit 1 stays red
+              mov  ax, 0x0a         ; yes, exit 1 is open so green
+exit1done:    push ax               ; parameter 2 of drawnode
+              call drawnode
+
+              inc  bx               ; go to the next switch
+              cmp  bx, 4            ; have we done all 4 switches?
+              jne  nextswitch       ; no, repeat for the next one
+
+              pop  si
+              pop  cx
+              pop  bx
+              pop  ax
+              ret
+
+; ===============================================================
+; subroutine drawstatus
+; draws the status bar on the last row (row 24):
+;     Score: 00  Mistakes: 0  Time: 000
+; the bar is white on blue, the numbers are yellow on blue
+; call this again whenever score, mistakes or seconds change
+; ===============================================================
+drawstatus:   push ax
+              push cx
+              push di
+              push es
+
+              ; ---- fill the whole last row with blue background
+              mov  ax, 0xb800
+              mov  es, ax           ; es points to video memory
+              mov  di, 3840         ; row 24 * 80 columns * 2 bytes
+              mov  ax, 0x1f20       ; space char, white on blue
+              mov  cx, 80           ; 80 screen locations in a row
+              cld                   ; auto increment mode
+              rep  stosw            ; paint the whole row
+
+              ; ---- the text "Score: " at x=2
+              mov  ax, 2
+              push ax               ; x
+              mov  ax, 24
+              push ax               ; y
+              mov  ax, 0x1f
+              push ax               ; attribute
+              mov  ax, msgscore
+              push ax               ; string offset
+              call printstr
+
+              ; ---- the score number (2 digits) at x=9
+              mov  ax, 9
+              push ax               ; x
+              mov  ax, 24
+              push ax               ; y
+              mov  ax, 0x1e
+              push ax               ; attribute
+              push word [score]     ; the number itself
+              mov  ax, 2
+              push ax               ; how many digits
+              call printnum
+
+              ; ---- the text "Mistakes: " at x=14
+              mov  ax, 14
+              push ax
+              mov  ax, 24
+              push ax
+              mov  ax, 0x1f
+              push ax
+              mov  ax, msgmist
+              push ax
+              call printstr
+
+              ; ---- the mistakes number (1 digit) at x=24
+              mov  ax, 24
+              push ax
+              mov  ax, 24
+              push ax
+              mov  ax, 0x1e
+              push ax
+              push word [mistakes]
+              mov  ax, 1
+              push ax
+              call printnum
+
+              ; ---- the text "Time: " at x=28
+              mov  ax, 28
+              push ax
+              mov  ax, 24
+              push ax
+              mov  ax, 0x1f
+              push ax
+              mov  ax, msgtime
+              push ax
+              call printstr
+
+              ; ---- the seconds number (3 digits) at x=34
+              mov  ax, 34
+              push ax
+              mov  ax, 24
+              push ax
+              mov  ax, 0x1e
+              push ax
+              push word [seconds]
+              mov  ax, 3
+              push ax
+              call printnum
+
+              pop  es
+              pop  di
+              pop  cx
+              pop  ax
+              ret
+
+
+start:        call   clrscr             ; clear the screen
+              call   drawtrack          ; draw the track from the table
+              call   drawlabels         ; Entry 1, Entry 2, Station A-D
+              call   drawswitches       ; switch boxes and route colours
+              call   drawstatus         ; status bar on the last row
+
+              mov    ah, 0              ; wait for a key so we can look
+              int    0x16               ; at the screen
+
+              mov    ax, 0x4c00         ; terminate program
+              int    0x21
+
+;----step 2----
