@@ -377,6 +377,24 @@ msgr2:        db 'random 0-1: ', 0  ; label of the second test row
 
 ;-------step 5-----
 
+;-------step 6-----
+
+; ---------------------------------------------------------------
+; step 6 data: spawning
+; ---------------------------------------------------------------
+spawntimer:   dw 0                  ; ticks passed since the last spawn try
+spawngap      equ 25                ; try to spawn a train every 25 ticks
+                                    ; (about 1.4 seconds)
+
+; destination letters each entrance can send a train to, 4 per entrance
+; entrance 1 reaches A, B, C, D
+; entrance 2 reaches B, C, D, and D again (direct D and upper D)
+; the entrance number (0 or 1) times 4 gives the start of its row
+dests:        db 'A', 'B', 'C', 'D' ; entrance 1
+              db 'D', 'B', 'C', 'D' ; entrance 2
+
+;-------step 6-----
+
 
 
 ;----step 2-----
@@ -1253,6 +1271,71 @@ randrange:    push bp
 
  ;-------------step 5-------
 
+ ;-------------step 6-------
+
+ ; ===============================================================
+; subroutine spawntrain
+; tries to put ONE new train on an entrance
+;   1. snapshot fills the occupied array from the current positions
+;   2. a random entrance (0 or 1) is chosen
+;   3. if a train already stands on that entrance, we do nothing
+;   4. a random destination letter is chosen from that entrance
+;   5. the first free train slot is filled and the train is drawn
+; takes no parameters
+; ===============================================================
+spawntrain:   push ax
+              push bx
+              push cx
+              push dx
+              push si
+
+              call snapshot         ; occupied = where trains stand now
+
+              mov  ax, 2
+              push ax               ; n = 2
+              call randrange        ; ax = 0 or 1 (which entrance)
+              mov  bx, ax           ; bx = entrance number
+              mov  dh, [entrances+bx] ; dh = node number of the entrance
+
+              mov  al, dh           ; al = entrance node
+              xor  ah, ah           ; ax = entrance node
+              mov  si, ax           ; si = index into occupied
+              cmp  byte [occupied+si], 0 ; is the entrance free?
+              jne  spdone           ; no, skip this spawn (no penalty)
+
+              mov  ax, 4
+              push ax               ; n = 4
+              call randrange        ; ax = 0 to 3 (which letter)
+              shl  bx, 1            ; bx = entrance * 2
+              shl  bx, 1            ; bx = entrance * 4 (row of dests)
+              add  bx, ax           ; bx = position inside dests
+              mov  dl, [dests+bx]   ; dl = destination letter
+
+              mov  si, trains       ; si points to slot 0
+              mov  cx, 8            ; we look at all 8 slots
+spfind:       cmp  byte [si], 0     ; is this slot free?
+              je   spfound          ; yes, use it
+              add  si, 5            ; no, next slot (5 bytes)
+              loop spfind           ; repeat for all slots
+              jmp  spdone           ; all 8 slots full, skip
+
+spfound:      mov  byte [si], 1     ; active = 1
+              mov  [si+1], dh       ; node = the entrance
+              mov  [si+2], dl       ; dest = the chosen letter
+              mov  al, [normalinterval] ; current interval for new trains
+              mov  [si+3], al       ; interval
+              mov  [si+4], al       ; counter starts equal to interval
+              call drawtrains       ; show the new train on screen
+
+spdone:       pop  si
+              pop  dx
+              pop  cx
+              pop  bx
+              pop  ax
+              ret
+
+ ;-------------step 6-------
+
  ;-------------start-------
 
  start:        call   clrscr             ; clear the screen
@@ -1261,103 +1344,20 @@ randrange:    push bp
               call   drawswitches       ; switch boxes and route colours
               call   drawstatus         ; status bar on the last row
 
-              ;-------step 4 test----
+              ;-------step 4 ----
 
                             call   cleartrains        ; start with no trains at all
 
-              ; ---- TEMPORARY TEST: put 3 trains by hand, delete later
-              mov    byte [trains+0], 1    ; slot 0 is active
-              mov    byte [trains+1], 3    ; standing on node 3 (entry 1 track)
-              mov    byte [trains+2], 'C'  ; wants to go to station C
-              mov    byte [trains+3], 6    ; moves every 6 ticks
-              mov    byte [trains+4], 6    ; 6 ticks left before first move
+             
 
-              mov    byte [trains+5], 1    ; slot 1 is active
-              mov    byte [trains+6], 57   ; standing on node 57 (entry 2 track)
-              mov    byte [trains+7], 'D'  ; wants to go to station D
-              mov    byte [trains+8], 6
-              mov    byte [trains+9], 6
-
-              mov    byte [trains+10], 1   ; slot 2 is active
-              mov    byte [trains+11], 20  ; standing on node 20 (route to A)
-              mov    byte [trains+12], 'A' ; wants to go to station A
-              mov    byte [trains+13], 6
-              mov    byte [trains+14], 6
-
-              call   snapshot           ; fill the occupied array
-              call   drawtrains         ; draw the 3 trains on screen
-              ; ---- END OF TEMPORARY TEST
-
-              ;-------step 4 test----
-              ;-------step 5 test----
+              ;-------step 4 ----
+              ;-------step 5 ----
 
                             call   seedrandom         ; give the generator a fresh seed
                                         ; (KEEP this line, delete the test)
 
-              ; ---- TEMPORARY TEST: print 16 random numbers on two rows
-              mov    ax, 2
-              push   ax                 ; x = 2
-              mov    ax, 17
-              push   ax                 ; y = 17
-              mov    ax, 0x07
-              push   ax                 ; attribute = normal
-              mov    ax, msgr4
-              push   ax                 ; offset of the label
-              call   printstr           ; writes "random 0-3: "
-
-              mov    ax, 2
-              push   ax                 ; x = 2
-              mov    ax, 18
-              push   ax                 ; y = 18
-              mov    ax, 0x07
-              push   ax
-              mov    ax, msgr2
-              push   ax
-              call   printstr           ; writes "random 0-1: "
-
-              xor    bx, bx             ; bx = 0, counts the 16 numbers
-
-trloop:       ; ---- first row: a random number from 0 to 3
-              mov    ax, 4
-              push   ax                 ; n = 4
-              call   randrange          ; ax = 0, 1, 2 or 3
-              mov    dx, ax             ; keep the number safe in dx
-              mov    ax, bx
-              add    ax, ax             ; ax = bx * 2 (spacing)
-              add    ax, 16             ; ax = x position of this number
-              push   ax                 ; x
-              mov    ax, 17
-              push   ax                 ; y
-              mov    ax, 0x0e
-              push   ax                 ; attribute = yellow
-              push   dx                 ; the number
-              mov    ax, 1
-              push   ax                 ; 1 digit
-              call   printnum
-
-              ; ---- second row: a random number from 0 to 1
-              mov    ax, 2
-              push   ax                 ; n = 2
-              call   randrange          ; ax = 0 or 1
-              mov    dx, ax
-              mov    ax, bx
-              add    ax, ax
-              add    ax, 16             ; x position of this number
-              push   ax                 ; x
-              mov    ax, 18
-              push   ax                 ; y
-              mov    ax, 0x0b
-              push   ax                 ; attribute = cyan
-              push   dx                 ; the number
-              mov    ax, 1
-              push   ax                 ; 1 digit
-              call   printnum
-
-              inc    bx                 ; next number
-              cmp    bx, 16             ; did we print all 16?
-              jne    trloop             ; no, repeat
-              ; ---- END OF TEMPORARY TEST
-              ;-------step 5 test----
+            
+              ;-------step 5----
               call   hookints           ; install our timer and keyboard ISRs
 
 ; ---------------------------------------------------------------
@@ -1372,7 +1372,14 @@ mainloop:     cmp    word [redrawflag], 0 ; was a switch toggled?
 noredraw:     cmp    word [tickcount], 0  ; is there a tick waiting?
               je     notick             ; no, skip
               dec    word [tickcount]   ; yes, use up one tick
-              ; (step 4: spawn and move the trains will go right here)
+              ;--------step 6-----
+              inc    word [spawntimer]  ; one more tick since last spawn try
+              cmp    word [spawntimer], spawngap ; time to try a spawn?
+              jb     notick             ; not yet, go on
+              mov    word [spawntimer], 0 ; yes, restart the count
+              call   spawntrain         ; try to put a train on an entrance
+              ;-----------step 6------
+              ; (step 7: the movement update will go here)
 
 notick:       mov    ax, [elapsedticks] ; total ticks so far
               xor    dx, dx             ; zero the upper half of dividend
