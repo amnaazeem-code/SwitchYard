@@ -298,6 +298,67 @@ oldtimer:     dd 0                  ; old INT 08h vector (offset then segment)
 oldkb:        dd 0                  ; old INT 09h vector (offset then segment)
 
 ;-------step 3-----
+;-------step 4-----
+
+; ---------------------------------------------------------------
+; step 4 data: the trains
+; there are at most 8 trains on screen at the same time.
+; every train takes 5 bytes, so the whole array is 8 * 5 = 40 bytes.
+; the byte positions inside one train are:
+;   +0 active    1 = this slot holds a train, 0 = slot is free
+;   +1 node      node number where the train is standing right now
+;   +2 dest      the destination station, stored as a letter 'A'-'D'
+;                (the same letter is drawn on screen for this train)
+;   +3 interval  how many timer ticks between two moves of this train
+;   +4 counter   ticks left before the next move, counts down to 0
+; the slot number is the position in the array (first slot is 0).
+; example: slot 2 starts at trains + 2*5 = trains + 10
+; ---------------------------------------------------------------
+normalinterval: db 6                ; interval given to every NEW train
+                                    ; (halved once at the speed-up)
+trains:       db 0, 0, 0, 0, 0      ; slot 0, all zeros = free slot
+              db 0, 0, 0, 0, 0      ; slot 1
+              db 0, 0, 0, 0, 0      ; slot 2
+              db 0, 0, 0, 0, 0      ; slot 3
+              db 0, 0, 0, 0, 0      ; slot 4
+              db 0, 0, 0, 0, 0      ; slot 5
+              db 0, 0, 0, 0, 0      ; slot 6
+              db 0, 0, 0, 0, 0      ; slot 7
+
+; ---------------------------------------------------------------
+; step 4 data: helper arrays, one byte for EVERY node (198 nodes)
+; the byte at position n belongs to node number n
+;   occupied[n] = 1 if a train was standing on node n when the
+;                 movement update started (a snapshot, never changed
+;                 during the update)
+;   claimed[n]  = 1 if some train already moved INTO node n during
+;                 this update (so a second train must wait)
+; both arrays are cleared at the start of every movement update
+; ---------------------------------------------------------------
+occupied:     db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 0 to 17
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 18 to 35
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 36 to 53
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 54 to 71
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 72 to 89
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 90 to 107
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 108 to 125
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 126 to 143
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 144 to 161
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 162 to 179
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 180 to 197
+
+claimed:      db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 0 to 17
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 18 to 35
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 36 to 53
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 54 to 71
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 72 to 89
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 90 to 107
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 108 to 125
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 126 to 143
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 144 to 161
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 162 to 179
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 180 to 197
+;-------step 4-----
 
 ;----step 2-----
 ; subroutine to clear the screen
@@ -953,6 +1014,143 @@ unhookints:   push ax
               pop  ax
               ret
  ;-------------step 3-------
+ ;-------------step 4-------
+
+ ; ===============================================================
+; subroutine cleartrains
+; makes every train slot free again and wipes both helper arrays
+; used when a new game starts (and later on replay)
+; takes no parameters
+; stosb writes the value in al to [es:di] and moves di forward,
+; rep repeats it cx times, so we fill a whole block with zeros
+; ===============================================================
+cleartrains:  push ax
+              push cx
+              push di
+              push es
+
+              push ds
+              pop  es               ; es = ds, because stosb writes at
+                                    ; es:di and our data is in ds
+              cld                   ; auto increment mode
+              xor  al, al           ; al = 0, the value we write
+
+              mov  di, trains       ; start of the trains array
+              mov  cx, 40           ; 8 trains * 5 bytes
+              rep  stosb            ; all 40 bytes become 0
+
+              mov  di, occupied     ; start of the occupied array
+              mov  cx, 198          ; one byte per node
+              rep  stosb            ; all 198 bytes become 0
+
+              mov  di, claimed      ; start of the claimed array
+              mov  cx, 198          ; one byte per node
+              rep  stosb            ; all 198 bytes become 0
+
+              pop  es
+              pop  di
+              pop  cx
+              pop  ax
+              ret
+
+; ===============================================================
+; subroutine snapshot
+; called at the START of every movement update (step 5 will use it)
+;   1. clears the claimed array (nobody has claimed anything yet)
+;   2. clears the occupied array, then marks every node that has a
+;      train standing on it
+; after this the occupied array shows who stood where at the start
+; takes no parameters
+; ===============================================================
+snapshot:     push ax
+              push bx
+              push cx
+              push si
+              push di
+              push es
+
+              push ds
+              pop  es               ; es = ds for stosb
+              cld                   ; auto increment mode
+              xor  al, al           ; al = 0
+
+              mov  di, claimed
+              mov  cx, 198
+              rep  stosb            ; claimed array becomes all zeros
+
+              mov  di, occupied
+              mov  cx, 198
+              rep  stosb            ; occupied array becomes all zeros
+
+              mov  si, trains       ; si points to slot 0
+              mov  cx, 8            ; we look at all 8 slots
+
+snloop:       cmp  byte [si], 0     ; is this slot free?
+              je   snnext           ; yes, nothing to mark
+              xor  bx, bx           ; bx = 0, so the upper half is zero
+              mov  bl, [si+1]       ; bx = node where this train stands
+              mov  byte [occupied+bx], 1 ; mark that node as occupied
+snnext:       add  si, 5            ; move to the next slot (5 bytes)
+              loop snloop           ; repeat for all 8 slots
+
+              pop  es
+              pop  di
+              pop  si
+              pop  cx
+              pop  bx
+              pop  ax
+              ret
+
+; ===============================================================
+; subroutine drawtrains
+; draws every active train on screen as its destination letter
+; (white letter on magenta background so it stands out)
+; the row and col come from the node where the train stands
+; takes no parameters
+; ===============================================================
+drawtrains:   push ax
+              push bx
+              push cx
+              push dx
+              push si
+
+              mov  si, trains       ; si points to slot 0
+              mov  cx, 8            ; we look at all 8 slots
+
+dtloop:       cmp  byte [si], 0     ; is this slot free?
+              je   dtnext           ; yes, nothing to draw
+
+              xor  ax, ax           ; ax = 0
+              mov  al, [si+1]       ; ax = node number of the train
+              mov  bx, 8            ; every node is 8 bytes
+              mul  bx               ; ax = node number * 8
+              add  ax, track        ; ax = address of that node
+              mov  bx, ax           ; bx points to the node in the table
+
+              xor  ax, ax
+              mov  al, [bx]         ; al = row of the node
+              push ax               ; parameter 1 of putchar: row
+              xor  ax, ax
+              mov  al, [bx+1]       ; al = col of the node
+              push ax               ; parameter 2 of putchar: col
+              xor  ax, ax
+              mov  al, [si+2]       ; al = destination letter of the train
+              push ax               ; parameter 3 of putchar: char
+              mov  ax, 0x5f         ; white on magenta
+              push ax               ; parameter 4 of putchar: attribute
+              call putchar          ; draw the train
+
+dtnext:       add  si, 5            ; move to the next slot (5 bytes)
+              loop dtloop           ; repeat for all 8 slots
+
+              pop  si
+              pop  dx
+              pop  cx
+              pop  bx
+              pop  ax
+              ret
+
+ ;-------------step 4-------
  ;-------------start-------
 
  start:        call   clrscr             ; clear the screen
@@ -961,6 +1159,34 @@ unhookints:   push ax
               call   drawswitches       ; switch boxes and route colours
               call   drawstatus         ; status bar on the last row
 
+              ;-------step 4 test----
+
+                            call   cleartrains        ; start with no trains at all
+
+              ; ---- TEMPORARY TEST: put 3 trains by hand, delete later
+              mov    byte [trains+0], 1    ; slot 0 is active
+              mov    byte [trains+1], 3    ; standing on node 3 (entry 1 track)
+              mov    byte [trains+2], 'C'  ; wants to go to station C
+              mov    byte [trains+3], 6    ; moves every 6 ticks
+              mov    byte [trains+4], 6    ; 6 ticks left before first move
+
+              mov    byte [trains+5], 1    ; slot 1 is active
+              mov    byte [trains+6], 57   ; standing on node 57 (entry 2 track)
+              mov    byte [trains+7], 'D'  ; wants to go to station D
+              mov    byte [trains+8], 6
+              mov    byte [trains+9], 6
+
+              mov    byte [trains+10], 1   ; slot 2 is active
+              mov    byte [trains+11], 20  ; standing on node 20 (route to A)
+              mov    byte [trains+12], 'A' ; wants to go to station A
+              mov    byte [trains+13], 6
+              mov    byte [trains+14], 6
+
+              call   snapshot           ; fill the occupied array
+              call   drawtrains         ; draw the 3 trains on screen
+              ; ---- END OF TEMPORARY TEST
+
+              ;-------step 4 test----
               call   hookints           ; install our timer and keyboard ISRs
 
 ; ---------------------------------------------------------------
