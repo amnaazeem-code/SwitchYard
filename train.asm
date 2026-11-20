@@ -394,6 +394,16 @@ dests:        db 'A', 'B', 'C', 'D' ; entrance 1
               db 'D', 'B', 'C', 'D' ; entrance 2
 
 ;-------step 6-----
+;-------step 7-----
+
+; ---------------------------------------------------------------
+; step 7 data: movement
+; ---------------------------------------------------------------
+moved:        db 0                  ; 1 = at least one train moved or was
+                                    ; removed in this update, so the
+                                    ; screen must be redrawn
+
+;-------step 7-----
 
 
 
@@ -1336,6 +1346,130 @@ spdone:       pop  si
 
  ;-------------step 6-------
 
+ ;-------------step 7-------
+
+ ; ===============================================================
+; subroutine movetrain
+; handles ONE train for ONE movement update
+; input: si = address of the train slot (not a stack parameter,
+;        movetrains keeps it in si while it walks the 8 slots)
+;   1. counter goes down by 1; if it is not 0 yet the train stays
+;   2. counter is set to interval again
+;   3. the next node is next0, or next1 if the train stands on a
+;      switch whose state is 1
+;   4. next node is a station: the train always enters, score or
+;      mistake is counted, and the train is removed
+;   5. next node is a normal cell: the train moves only if the cell
+;      was empty at the start of the update (occupied = 0) and nobody
+;      claimed it in this update (claimed = 0); otherwise it waits
+;      and there is no penalty
+; ===============================================================
+movetrain:    push ax
+              push bx
+              push di
+
+              dec  byte [si+4]      ; one tick less to wait
+              jz   mvgo             ; counter reached 0, time to move
+              jmp  mvdone           ; not zero yet, the train stays
+                                    ; (jmp can reach far, jnz could not)
+mvgo:
+
+              mov  al, [si+3]       ; al = interval of this train
+              mov  [si+4], al       ; counter = interval again
+
+              ; ---- find the node where the train stands now
+              xor  ax, ax           ; ax = 0
+              mov  al, [si+1]       ; ax = current node number
+              mov  di, ax
+              shl  di, 1            ; node * 2
+              shl  di, 1            ; node * 4
+              shl  di, 1            ; node * 8 (every node is 8 bytes)
+              add  di, track        ; di = address of the current node
+
+              ; ---- decide which node comes next
+              mov  al, [di+4]       ; al = next0 (the normal way on)
+              cmp  byte [di+3], 1   ; is the current node a switch?
+              jne  mvhavenext       ; no, next0 is the answer
+              xor  bx, bx           ; bx = 0
+              mov  bl, [di+6]       ; bx = switch number (0 to 3)
+              cmp  byte [switchstate+bx], 0 ; is the switch in state 0?
+              je   mvhavenext       ; yes, next0 is the answer
+              mov  al, [di+5]       ; no, state 1 so use next1
+
+mvhavenext:   xor  ah, ah           ; ax = next node number
+              mov  bx, ax           ; bx = next node (index for arrays)
+              mov  di, ax
+              shl  di, 1
+              shl  di, 1
+              shl  di, 1            ; di = next node * 8
+              add  di, track        ; di = address of the next node
+
+              cmp  byte [di+3], 2   ; is the next node a station?
+              jne  mvcell           ; no, it is a normal cell
+
+              ; ---- the train reaches a station
+              mov  al, [di+7]       ; al = letter of this station
+              cmp  al, [si+2]       ; same as the train's destination?
+              jne  mvwrong          ; no, wrong station
+              inc  word [score]     ; yes, one point
+              jmp  mvarrived
+mvwrong:      inc  word [mistakes]  ; wrong station, one mistake
+mvarrived:    mov  byte [si], 0     ; remove the train (slot is free)
+              mov  byte [moved], 1  ; screen must be redrawn
+              call drawstatus       ; show the new score / mistakes
+              jmp  mvdone
+
+              ; ---- the next node is a normal cell
+mvcell:       cmp  byte [occupied+bx], 0 ; was it empty at the start?
+              jne  mvdone           ; no, wait for the next update
+              cmp  byte [claimed+bx], 0  ; did another train claim it?
+              jne  mvdone           ; yes, wait for the next update
+              mov  byte [claimed+bx], 1  ; claim the cell
+              mov  [si+1], bl       ; the train moves to the new node
+              mov  byte [moved], 1  ; screen must be redrawn
+
+mvdone:       pop  di
+              pop  bx
+              pop  ax
+              ret
+
+; ===============================================================
+; subroutine movetrains
+; the whole movement update, called once per game tick
+;   1. snapshot: occupied = where trains stand now, claimed = zeros
+;   2. movetrain is called for every active slot
+;   3. if anything changed, the screen is redrawn in this order:
+;      track (erases the old train letters), switches (colours and
+;      boxes), trains (letters on top of everything)
+; takes no parameters
+; ===============================================================
+movetrains:   push cx
+              push si
+
+              call snapshot         ; occupied filled, claimed cleared
+              mov  byte [moved], 0  ; nothing has changed yet
+
+              mov  si, trains       ; si points to slot 0
+              mov  cx, 8            ; we look at all 8 slots
+
+mtloop:       cmp  byte [si], 0     ; is this slot free?
+              je   mtnext           ; yes, nothing to move
+              call movetrain        ; handle this train (si = slot)
+mtnext:       add  si, 5            ; next slot (5 bytes)
+              loop mtloop           ; repeat for all 8 slots
+
+              cmp  byte [moved], 0  ; did anything change?
+              je   mtend            ; no, leave the screen alone
+              call drawtrack        ; redraw all cells (erases old trains)
+              call drawswitches     ; switch boxes and route colours
+              call drawtrains       ; trains on top
+
+mtend:        pop  si
+              pop  cx
+              ret
+
+ ;-------------step 7-------
+
  ;-------------start-------
 
  start:        call   clrscr             ; clear the screen
@@ -1368,19 +1502,21 @@ mainloop:     cmp    word [redrawflag], 0 ; was a switch toggled?
               je     noredraw           ; no, skip the redraw
               mov    word [redrawflag], 0 ; yes, clear the flag first
               call   drawswitches       ; redraw only the switches
+              call   drawtrains         ; put the trains back on top
 
 noredraw:     cmp    word [tickcount], 0  ; is there a tick waiting?
               je     notick             ; no, skip
+
+              ;----step 7----
               dec    word [tickcount]   ; yes, use up one tick
-              ;--------step 6-----
+              call   movetrains         ; movement update (every tick)
               inc    word [spawntimer]  ; one more tick since last spawn try
               cmp    word [spawntimer], spawngap ; time to try a spawn?
               jb     notick             ; not yet, go on
               mov    word [spawntimer], 0 ; yes, restart the count
               call   spawntrain         ; try to put a train on an entrance
-              ;-----------step 6------
-              ; (step 7: the movement update will go here)
 
+              ;-----step 7--------
 notick:       mov    ax, [elapsedticks] ; total ticks so far
               xor    dx, dx             ; zero the upper half of dividend
               mov    bx, 18             ; timer ticks about 18 times a second
