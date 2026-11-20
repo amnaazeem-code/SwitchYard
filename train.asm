@@ -360,6 +360,25 @@ claimed:      db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 0 to 17
               db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 180 to 197
 ;-------step 4-----
 
+;-------step 5-----
+
+; ---------------------------------------------------------------
+; step 5 data: random number generator
+; seed is the number the generator remembers between two calls,
+; every call changes it (see the subroutine random)
+; ---------------------------------------------------------------
+seed:         dw 0                  ; starts at 0, seedrandom changes it
+
+; ---------------------------------------------------------------
+; step 5 data: strings for the TEMPORARY test (delete with the test)
+; ---------------------------------------------------------------
+msgr4:        db 'random 0-3: ', 0  ; label of the first test row
+msgr2:        db 'random 0-1: ', 0  ; label of the second test row
+
+;-------step 5-----
+
+
+
 ;----step 2-----
 ; subroutine to clear the screen
 clrscr:         push es
@@ -1151,6 +1170,89 @@ dtnext:       add  si, 5            ; move to the next slot (5 bytes)
               ret
 
  ;-------------step 4-------
+
+ ;-------------step 5-------
+
+ ; ===============================================================
+; subroutine seedrandom
+; gives the random number generator a different starting seed on
+; every run, using the BIOS clock (the number of timer ticks since
+; midnight). without this, every game would have the same trains.
+; call it ONCE, near the start of the program
+; INT 1Ah with ah=0 returns the tick count in cx:dx (high:low)
+; takes no parameters
+; ===============================================================
+seedrandom:   push ax
+              push cx
+              push dx
+
+              mov  ah, 0            ; function 0 = read the clock ticks
+              int  0x1a             ; cx = high 16 bits, dx = low 16 bits
+              xor  dx, cx           ; mix both halves into dx
+              mov  [seed], dx       ; this is our starting seed
+
+              pop  dx
+              pop  cx
+              pop  ax
+              ret
+
+; ===============================================================
+; subroutine random
+; the generator itself (a linear congruential generator, LCG):
+;       new seed = old seed * 25173 + 13849
+; only the low 16 bits are kept, so the number wraps around by
+; itself. the same seed always gives the same next number, but the
+; sequence looks random.
+; returns the new seed in ax (a number from 0 to 65535)
+; takes no parameters
+; ===============================================================
+random:       push bx
+              push dx
+
+              mov  ax, [seed]       ; ax = old seed
+              mov  bx, 25173        ; the multiplier
+              mul  bx               ; dx:ax = seed * 25173
+                                    ; we keep only ax (low 16 bits),
+                                    ; dx is thrown away
+              add  ax, 13849        ; add the constant
+              mov  [seed], ax       ; remember it for the next call
+
+              pop  dx
+              pop  bx
+              ret                   ; ax = the new seed
+
+; ===============================================================
+; subroutine randrange
+; returns a random number from 0 up to (n - 1), in ax
+; example: n = 4 gives 0, 1, 2 or 3
+; the LOW bits of an LCG are not very random (the lowest bit just
+; goes 0,1,0,1...), so we shift the number right by 8 and use the
+; HIGH bits, then take the remainder of a division by n
+; parameter pushed before the call:  n
+;   [bp+4] = n
+; ===============================================================
+randrange:    push bp
+              mov  bp, sp
+              push bx
+              push cx
+              push dx
+
+              call random           ; ax = new seed (0 to 65535)
+              mov  cl, 8
+              shr  ax, cl           ; ax = high byte only (0 to 255)
+              xor  dx, dx           ; zero the upper half of dividend
+              mov  bx, [bp+4]       ; bx = n
+              div  bx               ; ax = ax / n, dx = remainder
+              mov  ax, dx           ; remainder is 0 to n-1, return it
+
+              pop  dx
+              pop  cx
+              pop  bx
+              pop  bp
+              ret  2                ; 1 parameter x 2 bytes = 2 bytes
+
+ ;-------------step 5-------
+
  ;-------------start-------
 
  start:        call   clrscr             ; clear the screen
@@ -1187,6 +1289,75 @@ dtnext:       add  si, 5            ; move to the next slot (5 bytes)
               ; ---- END OF TEMPORARY TEST
 
               ;-------step 4 test----
+              ;-------step 5 test----
+
+                            call   seedrandom         ; give the generator a fresh seed
+                                        ; (KEEP this line, delete the test)
+
+              ; ---- TEMPORARY TEST: print 16 random numbers on two rows
+              mov    ax, 2
+              push   ax                 ; x = 2
+              mov    ax, 17
+              push   ax                 ; y = 17
+              mov    ax, 0x07
+              push   ax                 ; attribute = normal
+              mov    ax, msgr4
+              push   ax                 ; offset of the label
+              call   printstr           ; writes "random 0-3: "
+
+              mov    ax, 2
+              push   ax                 ; x = 2
+              mov    ax, 18
+              push   ax                 ; y = 18
+              mov    ax, 0x07
+              push   ax
+              mov    ax, msgr2
+              push   ax
+              call   printstr           ; writes "random 0-1: "
+
+              xor    bx, bx             ; bx = 0, counts the 16 numbers
+
+trloop:       ; ---- first row: a random number from 0 to 3
+              mov    ax, 4
+              push   ax                 ; n = 4
+              call   randrange          ; ax = 0, 1, 2 or 3
+              mov    dx, ax             ; keep the number safe in dx
+              mov    ax, bx
+              add    ax, ax             ; ax = bx * 2 (spacing)
+              add    ax, 16             ; ax = x position of this number
+              push   ax                 ; x
+              mov    ax, 17
+              push   ax                 ; y
+              mov    ax, 0x0e
+              push   ax                 ; attribute = yellow
+              push   dx                 ; the number
+              mov    ax, 1
+              push   ax                 ; 1 digit
+              call   printnum
+
+              ; ---- second row: a random number from 0 to 1
+              mov    ax, 2
+              push   ax                 ; n = 2
+              call   randrange          ; ax = 0 or 1
+              mov    dx, ax
+              mov    ax, bx
+              add    ax, ax
+              add    ax, 16             ; x position of this number
+              push   ax                 ; x
+              mov    ax, 18
+              push   ax                 ; y
+              mov    ax, 0x0b
+              push   ax                 ; attribute = cyan
+              push   dx                 ; the number
+              mov    ax, 1
+              push   ax                 ; 1 digit
+              call   printnum
+
+              inc    bx                 ; next number
+              cmp    bx, 16             ; did we print all 16?
+              jne    trloop             ; no, repeat
+              ; ---- END OF TEMPORARY TEST
+              ;-------step 5 test----
               call   hookints           ; install our timer and keyboard ISRs
 
 ; ---------------------------------------------------------------
