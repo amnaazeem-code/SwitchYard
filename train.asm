@@ -261,6 +261,153 @@ switchstate:    db 0, 0, 0, 0
 ;                normal switch station entrance
 attrtable:      db 0x07, 0x0e, 0x0a, 0x0b ; grey, yellow, green, cyan
 
+;----step 2-----
+; ---------------------------------------------------------------
+; step 2 data: numbers shown on the status bar
+; ---------------------------------------------------------------
+score:        dw 0                  ; correct deliveries so far
+mistakes:     dw 0                  ; wrong deliveries so far
+seconds:      dw 0                  ; elapsed time in seconds
+
+; ---------------------------------------------------------------
+; step 2 data: text strings, every string ends with a zero byte
+; so that printstr knows where the string stops
+; ---------------------------------------------------------------
+lblentry1:    db 'Entry 1', 0       ; label drawn above entrance 1
+lblentry2:    db 'Entry 2', 0       ; label drawn above entrance 2
+lblstA:       db 'Station A', 0     ; label drawn next to station A
+lblstB:       db 'Station B', 0     ; label drawn next to station B
+lblstC:       db 'Station C', 0     ; label drawn next to station C
+lblstD:       db 'Station D', 0     ; used twice, both D stations
+msgscore:     db 'Score: ', 0       ; status bar text
+msgmist:      db 'Mistakes: ', 0    ; status bar text
+msgtime:      db 'Time: ', 0        ; status bar text
+
+; ---------------------------------------------------------------
+; step 3 data: interrupt related variables
+; ---------------------------------------------------------------
+tickcount:    dw 0                  ; ticks waiting to be used by the game
+                                    ; (timer ISR adds 1, main loop takes 1)
+elapsedticks: dw 0                  ; total ticks since the game started
+                                    ; (only grows, used for the clock)
+redrawflag:   dw 0                  ; 1 = a switch was toggled, so the
+                                    ; main loop must redraw the switches
+quitflag:     dw 0                  ; 1 = Esc was pressed, leave the game
+mode:         dw 1                  ; 1 = single player, 2 = two player co-op
+oldtimer:     dd 0                  ; old INT 08h vector (offset then segment)
+oldkb:        dd 0                  ; old INT 09h vector (offset then segment)
+
+;-------step 3-----
+;-------step 4-----
+
+; ---------------------------------------------------------------
+; step 4 data: the trains
+; there are at most 8 trains on screen at the same time.
+; every train takes 5 bytes, so the whole array is 8 * 5 = 40 bytes.
+; the byte positions inside one train are:
+;   +0 active    1 = this slot holds a train, 0 = slot is free
+;   +1 node      node number where the train is standing right now
+;   +2 dest      the destination station, stored as a letter 'A'-'D'
+;                (the same letter is drawn on screen for this train)
+;   +3 interval  how many timer ticks between two moves of this train
+;   +4 counter   ticks left before the next move, counts down to 0
+; the slot number is the position in the array (first slot is 0).
+; example: slot 2 starts at trains + 2*5 = trains + 10
+; ---------------------------------------------------------------
+normalinterval: db 6                ; interval given to every NEW train
+                                    ; (halved once at the speed-up)
+trains:       db 0, 0, 0, 0, 0      ; slot 0, all zeros = free slot
+              db 0, 0, 0, 0, 0      ; slot 1
+              db 0, 0, 0, 0, 0      ; slot 2
+              db 0, 0, 0, 0, 0      ; slot 3
+              db 0, 0, 0, 0, 0      ; slot 4
+              db 0, 0, 0, 0, 0      ; slot 5
+              db 0, 0, 0, 0, 0      ; slot 6
+              db 0, 0, 0, 0, 0      ; slot 7
+
+; ---------------------------------------------------------------
+; step 4 data: helper arrays, one byte for EVERY node (198 nodes)
+; the byte at position n belongs to node number n
+;   occupied[n] = 1 if a train was standing on node n when the
+;                 movement update started (a snapshot, never changed
+;                 during the update)
+;   claimed[n]  = 1 if some train already moved INTO node n during
+;                 this update (so a second train must wait)
+; both arrays are cleared at the start of every movement update
+; ---------------------------------------------------------------
+occupied:     db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 0 to 17
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 18 to 35
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 36 to 53
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 54 to 71
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 72 to 89
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 90 to 107
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 108 to 125
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 126 to 143
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 144 to 161
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 162 to 179
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 180 to 197
+
+claimed:      db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 0 to 17
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 18 to 35
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 36 to 53
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 54 to 71
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 72 to 89
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 90 to 107
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 108 to 125
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 126 to 143
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 144 to 161
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 162 to 179
+              db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0  ; nodes 180 to 197
+;-------step 4-----
+
+;-------step 5-----
+
+; ---------------------------------------------------------------
+; step 5 data: random number generator
+; seed is the number the generator remembers between two calls,
+; every call changes it (see the subroutine random)
+; ---------------------------------------------------------------
+seed:         dw 0                  ; starts at 0, seedrandom changes it
+
+; ---------------------------------------------------------------
+; step 5 data: strings for the TEMPORARY test (delete with the test)
+; ---------------------------------------------------------------
+msgr4:        db 'random 0-3: ', 0  ; label of the first test row
+msgr2:        db 'random 0-1: ', 0  ; label of the second test row
+
+;-------step 5-----
+
+;-------step 6-----
+
+; ---------------------------------------------------------------
+; step 6 data: spawning
+; ---------------------------------------------------------------
+spawntimer:   dw 0                  ; ticks passed since the last spawn try
+spawngap      equ 25                ; try to spawn a train every 25 ticks
+                                    ; (about 1.4 seconds)
+
+; destination letters each entrance can send a train to, 4 per entrance
+; entrance 1 reaches A, B, C, D
+; entrance 2 reaches B, C, D, and D again (direct D and upper D)
+; the entrance number (0 or 1) times 4 gives the start of its row
+dests:        db 'A', 'B', 'C', 'D' ; entrance 1
+              db 'D', 'B', 'C', 'D' ; entrance 2
+
+;-------step 6-----
+;-------step 7-----
+
+; ---------------------------------------------------------------
+; step 7 data: movement
+; ---------------------------------------------------------------
+moved:        db 0                  ; 1 = at least one train moved or was
+                                    ; removed in this update, so the
+                                    ; screen must be redrawn
+
+;-------step 7-----
+
+
+
+;----step 2-----
 ; subroutine to clear the screen
 clrscr:         push es
                 push ax
@@ -324,11 +471,1065 @@ nextnode:       mov    al, [si]           ; load the row of this node
                 pop    es
                 ret
 
-start:          call   clrscr             ; clear the screen
-                call   drawtrack          ; draw the track from the table
 
-                mov    ah, 0              ; wait for a key so we can look
-                int    0x16               ; at the screen
+;----step 2---
 
-                mov    ax, 0x4c00         ; terminate program
-                int    0x21
+; ===============================================================
+; subroutine putchar
+; puts ONE character with ONE attribute at (row, col) on screen
+; parameters pushed in this order: row, col, char, attribute
+;   [bp+10] = row    [bp+8] = col    [bp+6] = char    [bp+4] = attribute
+; screen offset formula: offset = (row * 80 + col) * 2
+; ===============================================================
+putchar:      push bp
+              mov  bp, sp           ; bp now points to our stack frame
+              push es               ; save every register we are going
+              push ax               ; to change, so the caller does
+              push bx               ; not lose its values
+              push dx
+              push di
+
+              mov  ax, 0xb800
+              mov  es, ax           ; es points to video memory
+
+              mov  ax, [bp+10]      ; ax = row
+              mov  bx, 80           ; 80 columns in every row
+              mul  bx               ; ax = row * 80 (dx is destroyed,
+                                    ; that is why we saved it above)
+              add  ax, [bp+8]       ; ax = row * 80 + col
+              shl  ax, 1            ; multiply by 2, every screen
+                                    ; location takes 2 bytes
+              mov  di, ax           ; di = offset inside video memory
+
+              mov  al, [bp+6]       ; al = character (low byte of word)
+              mov  ah, [bp+4]       ; ah = attribute (colour)
+              mov  [es:di], ax      ; write char and attribute together
+
+              pop  di
+              pop  dx
+              pop  bx
+              pop  ax
+              pop  es
+              pop  bp
+              ret  8                ; 4 parameters x 2 bytes = 8 bytes
+
+; ===============================================================
+; subroutine printstr
+; prints a zero terminated string at (x, y) on screen
+; parameters pushed in this order: x, y, attribute, string offset
+;   [bp+10] = x (col)   [bp+8] = y (row)
+;   [bp+6]  = attribute [bp+4] = offset of the string
+; ===============================================================
+printstr:     push bp
+              mov  bp, sp
+              push es
+              push ax
+              push bx
+              push dx
+              push si
+              push di
+
+              mov  ax, 0xb800
+              mov  es, ax           ; es points to video memory
+
+              mov  ax, [bp+8]       ; ax = y (row)
+              mov  bx, 80
+              mul  bx               ; ax = row * 80
+              add  ax, [bp+10]      ; ax = row * 80 + x
+              shl  ax, 1            ; 2 bytes per screen location
+              mov  di, ax           ; di = where the first char goes
+
+              mov  si, [bp+4]       ; si points to the first char
+              mov  ah, [bp+6]       ; ah = attribute for every char
+
+psnext:       mov  al, [si]         ; load one character of the string
+              cmp  al, 0            ; is it the zero at the end?
+              je   psend            ; yes, string finished
+              mov  [es:di], ax      ; no, print char and attribute
+              add  di, 2            ; move to the next screen location
+              inc  si               ; move to the next char of string
+              jmp  psnext           ; repeat for the next char
+
+psend:        pop  di
+              pop  si
+              pop  dx
+              pop  bx
+              pop  ax
+              pop  es
+              pop  bp
+              ret  8                ; 4 parameters x 2 bytes = 8 bytes
+
+; ===============================================================
+; subroutine printnum
+; prints a number with a FIXED count of digits (leading zeros)
+; fixed width means old digits never stay on screen
+; parameters pushed in this order: x, y, attribute, number, digits
+;   [bp+12] = x   [bp+10] = y   [bp+8] = attribute
+;   [bp+6]  = the number to print   [bp+4] = how many digits
+; ===============================================================
+printnum:     push bp
+              mov  bp, sp
+              push es
+              push ax
+              push bx
+              push cx
+              push dx
+              push di
+
+              mov  ax, 0xb800
+              mov  es, ax           ; es points to video memory
+
+              mov  ax, [bp+10]      ; ax = y (row)
+              mov  bx, 80
+              mul  bx               ; ax = row * 80
+              add  ax, [bp+12]      ; ax = row * 80 + x
+              shl  ax, 1            ; 2 bytes per screen location
+              mov  di, ax           ; di = where the first digit goes
+
+              mov  ax, [bp+6]       ; ax = the number to print
+              mov  bx, 10           ; we divide by 10 again and again
+              mov  cx, [bp+4]       ; cx = number of digits to make
+
+pndivide:     xor  dx, dx           ; zero the upper half of dividend
+              div  bx               ; ax = ax / 10, dx = remainder
+              add  dl, 0x30         ; turn the digit into its ascii char
+              push dx               ; save the digit on the stack
+              loop pndivide         ; repeat cx times (cx goes down)
+
+              mov  cx, [bp+4]       ; cx = number of digits again
+              mov  ah, [bp+8]       ; ah = attribute for every digit
+
+pnprint:      pop  dx               ; digits come out in correct order
+              mov  al, dl           ; al = the digit char
+              mov  [es:di], ax      ; print digit and attribute
+              add  di, 2            ; next screen location
+              loop pnprint          ; repeat for all digits
+
+              pop  di
+              pop  dx
+              pop  cx
+              pop  bx
+              pop  ax
+              pop  es
+              pop  bp
+              ret  10               ; 5 parameters x 2 bytes = 10 bytes
+
+; ===============================================================
+; subroutine drawnode
+; draws ONE node of the track table using putchar
+; the row, col and char are read from the table, only the
+; attribute (colour) is given by the caller
+; parameters pushed in this order: node number, attribute
+;   [bp+6] = node number    [bp+4] = attribute
+; ===============================================================
+drawnode:     push bp
+              mov  bp, sp
+              push ax
+              push bx
+              push dx
+              push si
+
+              mov  ax, [bp+6]       ; ax = node number
+              mov  bx, 8            ; every node is 8 bytes
+              mul  bx               ; ax = node number * 8
+              add  ax, track        ; ax = address of this node
+              mov  si, ax           ; si points to the node
+
+              mov  al, [si]         ; al = row of the node
+              xor  ah, ah           ; make it a full 16 bit word
+              push ax               ; parameter 1 of putchar: row
+              mov  al, [si+1]       ; al = col of the node
+              xor  ah, ah
+              push ax               ; parameter 2 of putchar: col
+              mov  al, [si+2]       ; al = char of the node
+              xor  ah, ah
+              push ax               ; parameter 3 of putchar: char
+              push word [bp+4]      ; parameter 4 of putchar: attribute
+              call putchar          ; draw it
+
+              pop  si
+              pop  dx
+              pop  bx
+              pop  ax
+              pop  bp
+              ret  4                ; 2 parameters x 2 bytes = 4 bytes
+
+; ===============================================================
+; subroutine drawlabels
+; writes the names Entry 1, Entry 2 and Station A, B, C, D
+; takes no parameters. only needs to be called once per game
+; each printstr call needs: x, y, attribute, string offset
+; ===============================================================
+drawlabels:   push ax
+
+              ; ---- Entry 1 label, above the arrow on row 5
+              mov  ax, 1
+              push ax               ; x = 1
+              mov  ax, 4
+              push ax               ; y = 4
+              mov  ax, 0x0b
+              push ax               ; attribute = light cyan
+              mov  ax, lblentry1
+              push ax               ; offset of the string
+              call printstr
+
+              ; ---- Entry 2 label, above the arrow on row 11
+              mov  ax, 1
+              push ax               ; x = 1
+              mov  ax, 10
+              push ax               ; y = 10
+              mov  ax, 0x0b
+              push ax
+              mov  ax, lblentry2
+              push ax
+              call printstr
+
+              ; ---- Station A label, to the right of A (row 3)
+              mov  ax, 54
+              push ax               ; x = 54
+              mov  ax, 3
+              push ax               ; y = 3
+              mov  ax, 0x0a
+              push ax               ; attribute = light green
+              mov  ax, lblstA
+              push ax
+              call printstr
+
+              ; ---- Station B label (row 5)
+              mov  ax, 54
+              push ax
+              mov  ax, 5
+              push ax
+              mov  ax, 0x0a
+              push ax
+              mov  ax, lblstB
+              push ax
+              call printstr
+
+              ; ---- Station C label (row 8)
+              mov  ax, 54
+              push ax
+              mov  ax, 8
+              push ax
+              mov  ax, 0x0a
+              push ax
+              mov  ax, lblstC
+              push ax
+              call printstr
+
+              ; ---- first Station D label (row 10)
+              mov  ax, 54
+              push ax
+              mov  ax, 10
+              push ax
+              mov  ax, 0x0a
+              push ax
+              mov  ax, lblstD
+              push ax
+              call printstr
+
+              ; ---- second Station D label (row 13)
+              mov  ax, 54
+              push ax
+              mov  ax, 13
+              push ax
+              mov  ax, 0x0a
+              push ax
+              mov  ax, lblstD
+              push ax
+              call printstr
+
+              pop  ax
+              ret
+
+; ===============================================================
+; subroutine drawswitches
+; for every switch: draws the number box, and shows which route
+; is selected by colouring the FIRST cell of each exit:
+;     green (0x0a) = route is selected (open)
+;     red   (0x04) = route is not selected (closed)
+; call this once at start, and again ONLY when a switch is toggled
+; takes no parameters, it reads switchnode and switchstate
+; ===============================================================
+drawswitches: push ax
+              push bx
+              push cx
+              push si
+
+              xor  bx, bx           ; bx = switch number, start with 0
+
+nextswitch:   ; ---- step 1: draw the switch box (yellow on blue)
+              xor  ah, ah
+              mov  al, [switchnode+bx] ; al = node number of this switch
+              push ax               ; parameter 1 of drawnode: node
+              mov  ax, 0x1e
+              push ax               ; parameter 2 of drawnode: attribute
+              call drawnode
+
+              ; ---- step 2: find the switch node in the table
+              xor  ah, ah
+              mov  al, [switchnode+bx] ; al = node number again
+              mov  cl, 3
+              shl  ax, cl           ; ax = node number * 8
+              add  ax, track        ; ax = address of the switch node
+              mov  si, ax           ; si points to the switch node
+
+              ; ---- step 3: exit 0 (next0 is at byte +4 of the node)
+              xor  ah, ah
+              mov  al, [si+4]       ; al = node where state 0 goes
+              push ax               ; parameter 1 of drawnode
+              mov  ax, 0x04         ; assume red (closed)
+              cmp  byte [switchstate+bx], 0 ; is this switch in state 0?
+              jne  exit0done        ; no, so exit 0 stays red
+              mov  ax, 0x0a         ; yes, exit 0 is open so green
+exit0done:    push ax               ; parameter 2 of drawnode
+              call drawnode
+
+              ; ---- step 4: exit 1 (next1 is at byte +5 of the node)
+              xor  ah, ah
+              mov  al, [si+5]       ; al = node where state 1 goes
+              push ax               ; parameter 1 of drawnode
+              mov  ax, 0x04         ; assume red (closed)
+              cmp  byte [switchstate+bx], 1 ; is this switch in state 1?
+              jne  exit1done        ; no, so exit 1 stays red
+              mov  ax, 0x0a         ; yes, exit 1 is open so green
+exit1done:    push ax               ; parameter 2 of drawnode
+              call drawnode
+
+              inc  bx               ; go to the next switch
+              cmp  bx, 4            ; have we done all 4 switches?
+              jne  nextswitch       ; no, repeat for the next one
+
+              pop  si
+              pop  cx
+              pop  bx
+              pop  ax
+              ret
+
+; ===============================================================
+; subroutine drawstatus
+; draws the status bar on the last row (row 24):
+;     Score: 00  Mistakes: 0  Time: 000
+; the bar is white on blue, the numbers are yellow on blue
+; call this again whenever score, mistakes or seconds change
+; ===============================================================
+drawstatus:   push ax
+              push cx
+              push di
+              push es
+
+              ; ---- fill the whole last row with blue background
+              mov  ax, 0xb800
+              mov  es, ax           ; es points to video memory
+              mov  di, 3840         ; row 24 * 80 columns * 2 bytes
+              mov  ax, 0x1f20       ; space char, white on blue
+              mov  cx, 80           ; 80 screen locations in a row
+              cld                   ; auto increment mode
+              rep  stosw            ; paint the whole row
+
+              ; ---- the text "Score: " at x=2
+              mov  ax, 2
+              push ax               ; x
+              mov  ax, 24
+              push ax               ; y
+              mov  ax, 0x1f
+              push ax               ; attribute
+              mov  ax, msgscore
+              push ax               ; string offset
+              call printstr
+
+              ; ---- the score number (2 digits) at x=9
+              mov  ax, 9
+              push ax               ; x
+              mov  ax, 24
+              push ax               ; y
+              mov  ax, 0x1e
+              push ax               ; attribute
+              push word [score]     ; the number itself
+              mov  ax, 2
+              push ax               ; how many digits
+              call printnum
+
+              ; ---- the text "Mistakes: " at x=14
+              mov  ax, 14
+              push ax
+              mov  ax, 24
+              push ax
+              mov  ax, 0x1f
+              push ax
+              mov  ax, msgmist
+              push ax
+              call printstr
+
+              ; ---- the mistakes number (1 digit) at x=24
+              mov  ax, 24
+              push ax
+              mov  ax, 24
+              push ax
+              mov  ax, 0x1e
+              push ax
+              push word [mistakes]
+              mov  ax, 1
+              push ax
+              call printnum
+
+              ; ---- the text "Time: " at x=28
+              mov  ax, 28
+              push ax
+              mov  ax, 24
+              push ax
+              mov  ax, 0x1f
+              push ax
+              mov  ax, msgtime
+              push ax
+              call printstr
+
+              ; ---- the seconds number (3 digits) at x=34
+              mov  ax, 34
+              push ax
+              mov  ax, 24
+              push ax
+              mov  ax, 0x1e
+              push ax
+              push word [seconds]
+              mov  ax, 3
+              push ax
+              call printnum
+
+              pop  es
+              pop  di
+              pop  cx
+              pop  ax
+              ret
+
+ ;-------------step 2-------
+ ;-------------step 3-------
+
+ ; ===============================================================
+; timer interrupt service routine (hooked on INT 08h)
+; the timer chip generates this interrupt about 18.2 times a second
+; an ISR must be SHORT, so it only adds 1 to two counters
+; ===============================================================
+timer:        push ax
+
+              inc  word [cs:tickcount]    ; one more tick for the game
+              inc  word [cs:elapsedticks] ; one more tick on the clock
+                                          ; [cs:...] is used because ds
+                                          ; is not known inside an ISR
+
+              mov  al, 0x20
+              out  0x20, al               ; tell the PIC the interrupt
+                                          ; is finished (EOI)
+
+              pop  ax
+              iret                        ; return from interrupt
+
+; ===============================================================
+; keyboard interrupt service routine (hooked on INT 09h)
+; runs every time a key is pressed OR released
+; scan codes of the keys we care about:
+;     1 = 0x02   2 = 0x03   3 = 0x04   4 = 0x05
+;     J = 0x24   K = 0x25   Esc = 0x01
+; when a key is RELEASED the keyboard sends the same code with bit 7
+; set (code + 0x80), so a release never matches our press codes
+; and is ignored automatically
+; bx is used as the number of the switch to toggle (0 to 3)
+; ===============================================================
+kbisr:        push ax
+              push bx
+
+              in   al, 0x60               ; read the scan code from the
+                                          ; keyboard port
+
+              cmp  al, 0x02               ; is it key 1?
+              je   isw0                   ; yes, toggle switch 1
+              cmp  al, 0x03               ; is it key 2?
+              je   isw1                   ; yes, toggle switch 2
+              cmp  al, 0x04               ; is it key 3?
+              je   isw2single             ; yes, check the mode first
+              cmp  al, 0x05               ; is it key 4?
+              je   isw3single             ; yes, check the mode first
+              cmp  al, 0x24               ; is it key J?
+              je   isw2coop               ; yes, check the mode first
+              cmp  al, 0x25               ; is it key K?
+              je   isw3coop               ; yes, check the mode first
+              cmp  al, 0x01               ; is it Esc?
+              je   iquit                  ; yes, ask the game to stop
+              jmp  nomatch                ; any other key, not ours
+
+isw0:         mov  bx, 0                  ; switch 1 has number 0
+              jmp  dotoggle
+isw1:         mov  bx, 1                  ; switch 2 has number 1
+              jmp  dotoggle
+
+isw2single:   cmp  word [cs:mode], 1      ; key 3 works in single player
+              jne  nomatch                ; co-op, so ignore this key
+              mov  bx, 2                  ; switch 3 has number 2
+              jmp  dotoggle
+isw3single:   cmp  word [cs:mode], 1      ; key 4 works in single player
+              jne  nomatch                ; co-op, so ignore this key
+              mov  bx, 3                  ; switch 4 has number 3
+              jmp  dotoggle
+
+isw2coop:     cmp  word [cs:mode], 2      ; J works in co-op only
+              jne  nomatch                ; single player, ignore this key
+              mov  bx, 2                  ; J toggles switch 3
+              jmp  dotoggle
+isw3coop:     cmp  word [cs:mode], 2      ; K works in co-op only
+              jne  nomatch                ; single player, ignore this key
+              mov  bx, 3                  ; K toggles switch 4
+              jmp  dotoggle
+
+dotoggle:     xor  byte [cs:switchstate+bx], 1 ; flip 0 to 1, or 1 to 0
+              mov  word [cs:redrawflag], 1     ; tell main loop to redraw
+              jmp  kbexit
+
+iquit:        mov  word [cs:quitflag], 1  ; tell main loop to quit
+              jmp  kbexit
+
+nomatch:      pop  bx                     ; not our key, give back the
+              pop  ax                     ; registers and let the old
+              jmp  far [cs:oldkb]         ; ISR handle it (chaining)
+
+kbexit:       mov  al, 0x20
+              out  0x20, al               ; end of interrupt for the PIC
+
+              pop  bx
+              pop  ax
+              iret                        ; return from interrupt
+
+; ===============================================================
+; subroutine hookints
+; saves the old INT 08h and INT 09h vectors, then installs ours
+; the interrupt vector table starts at 0000:0000
+; vector n lives at address n*4: offset (2 bytes), segment (2 bytes)
+; ===============================================================
+hookints:     push ax
+              push es
+
+              xor  ax, ax
+              mov  es, ax                 ; es points to the IVT base
+
+              mov  ax, [es:8*4]           ; old timer offset
+              mov  [oldtimer], ax         ; save it
+              mov  ax, [es:8*4+2]         ; old timer segment
+              mov  [oldtimer+2], ax       ; save it
+
+              mov  ax, [es:9*4]           ; old keyboard offset
+              mov  [oldkb], ax            ; save it
+              mov  ax, [es:9*4+2]         ; old keyboard segment
+              mov  [oldkb+2], ax          ; save it
+
+              cli                         ; stop interrupts while we
+                                          ; change the table
+              mov  word [es:8*4], timer   ; our timer offset
+              mov  [es:8*4+2], cs         ; our timer segment
+              mov  word [es:9*4], kbisr   ; our keyboard offset
+              mov  [es:9*4+2], cs         ; our keyboard segment
+              sti                         ; interrupts allowed again
+
+              pop  es
+              pop  ax
+              ret
+
+; ===============================================================
+; subroutine unhookints
+; puts the old INT 08h and INT 09h vectors back
+; MUST be called before returning to DOS, and before hooking again
+; on replay, otherwise DOS keeps pointing at code that is gone
+; ===============================================================
+unhookints:   push ax
+              push es
+
+              xor  ax, ax
+              mov  es, ax                 ; es points to the IVT base
+
+              cli                         ; stop interrupts while we
+                                          ; change the table
+              mov  ax, [oldtimer]         ; saved timer offset
+              mov  [es:8*4], ax           ; put it back
+              mov  ax, [oldtimer+2]       ; saved timer segment
+              mov  [es:8*4+2], ax         ; put it back
+
+              mov  ax, [oldkb]            ; saved keyboard offset
+              mov  [es:9*4], ax           ; put it back
+              mov  ax, [oldkb+2]          ; saved keyboard segment
+              mov  [es:9*4+2], ax         ; put it back
+              sti                         ; interrupts allowed again
+
+              pop  es
+              pop  ax
+              ret
+ ;-------------step 3-------
+ ;-------------step 4-------
+
+ ; ===============================================================
+; subroutine cleartrains
+; makes every train slot free again and wipes both helper arrays
+; used when a new game starts (and later on replay)
+; takes no parameters
+; stosb writes the value in al to [es:di] and moves di forward,
+; rep repeats it cx times, so we fill a whole block with zeros
+; ===============================================================
+cleartrains:  push ax
+              push cx
+              push di
+              push es
+
+              push ds
+              pop  es               ; es = ds, because stosb writes at
+                                    ; es:di and our data is in ds
+              cld                   ; auto increment mode
+              xor  al, al           ; al = 0, the value we write
+
+              mov  di, trains       ; start of the trains array
+              mov  cx, 40           ; 8 trains * 5 bytes
+              rep  stosb            ; all 40 bytes become 0
+
+              mov  di, occupied     ; start of the occupied array
+              mov  cx, 198          ; one byte per node
+              rep  stosb            ; all 198 bytes become 0
+
+              mov  di, claimed      ; start of the claimed array
+              mov  cx, 198          ; one byte per node
+              rep  stosb            ; all 198 bytes become 0
+
+              pop  es
+              pop  di
+              pop  cx
+              pop  ax
+              ret
+
+; ===============================================================
+; subroutine snapshot
+; called at the START of every movement update (step 5 will use it)
+;   1. clears the claimed array (nobody has claimed anything yet)
+;   2. clears the occupied array, then marks every node that has a
+;      train standing on it
+; after this the occupied array shows who stood where at the start
+; takes no parameters
+; ===============================================================
+snapshot:     push ax
+              push bx
+              push cx
+              push si
+              push di
+              push es
+
+              push ds
+              pop  es               ; es = ds for stosb
+              cld                   ; auto increment mode
+              xor  al, al           ; al = 0
+
+              mov  di, claimed
+              mov  cx, 198
+              rep  stosb            ; claimed array becomes all zeros
+
+              mov  di, occupied
+              mov  cx, 198
+              rep  stosb            ; occupied array becomes all zeros
+
+              mov  si, trains       ; si points to slot 0
+              mov  cx, 8            ; we look at all 8 slots
+
+snloop:       cmp  byte [si], 0     ; is this slot free?
+              je   snnext           ; yes, nothing to mark
+              xor  bx, bx           ; bx = 0, so the upper half is zero
+              mov  bl, [si+1]       ; bx = node where this train stands
+              mov  byte [occupied+bx], 1 ; mark that node as occupied
+snnext:       add  si, 5            ; move to the next slot (5 bytes)
+              loop snloop           ; repeat for all 8 slots
+
+              pop  es
+              pop  di
+              pop  si
+              pop  cx
+              pop  bx
+              pop  ax
+              ret
+
+; ===============================================================
+; subroutine drawtrains
+; draws every active train on screen as its destination letter
+; (white letter on magenta background so it stands out)
+; the row and col come from the node where the train stands
+; takes no parameters
+; ===============================================================
+drawtrains:   push ax
+              push bx
+              push cx
+              push dx
+              push si
+
+              mov  si, trains       ; si points to slot 0
+              mov  cx, 8            ; we look at all 8 slots
+
+dtloop:       cmp  byte [si], 0     ; is this slot free?
+              je   dtnext           ; yes, nothing to draw
+
+              xor  ax, ax           ; ax = 0
+              mov  al, [si+1]       ; ax = node number of the train
+              mov  bx, 8            ; every node is 8 bytes
+              mul  bx               ; ax = node number * 8
+              add  ax, track        ; ax = address of that node
+              mov  bx, ax           ; bx points to the node in the table
+
+              xor  ax, ax
+              mov  al, [bx]         ; al = row of the node
+              push ax               ; parameter 1 of putchar: row
+              xor  ax, ax
+              mov  al, [bx+1]       ; al = col of the node
+              push ax               ; parameter 2 of putchar: col
+              xor  ax, ax
+              mov  al, [si+2]       ; al = destination letter of the train
+              push ax               ; parameter 3 of putchar: char
+              mov  ax, 0x5f         ; white on magenta
+              push ax               ; parameter 4 of putchar: attribute
+              call putchar          ; draw the train
+
+dtnext:       add  si, 5            ; move to the next slot (5 bytes)
+              loop dtloop           ; repeat for all 8 slots
+
+              pop  si
+              pop  dx
+              pop  cx
+              pop  bx
+              pop  ax
+              ret
+
+ ;-------------step 4-------
+
+ ;-------------step 5-------
+
+ ; ===============================================================
+; subroutine seedrandom
+; gives the random number generator a different starting seed on
+; every run, using the BIOS clock (the number of timer ticks since
+; midnight). without this, every game would have the same trains.
+; call it ONCE, near the start of the program
+; INT 1Ah with ah=0 returns the tick count in cx:dx (high:low)
+; takes no parameters
+; ===============================================================
+seedrandom:   push ax
+              push cx
+              push dx
+
+              mov  ah, 0            ; function 0 = read the clock ticks
+              int  0x1a             ; cx = high 16 bits, dx = low 16 bits
+              xor  dx, cx           ; mix both halves into dx
+              mov  [seed], dx       ; this is our starting seed
+
+              pop  dx
+              pop  cx
+              pop  ax
+              ret
+
+; ===============================================================
+; subroutine random
+; the generator itself (a linear congruential generator, LCG):
+;       new seed = old seed * 25173 + 13849
+; only the low 16 bits are kept, so the number wraps around by
+; itself. the same seed always gives the same next number, but the
+; sequence looks random.
+; returns the new seed in ax (a number from 0 to 65535)
+; takes no parameters
+; ===============================================================
+random:       push bx
+              push dx
+
+              mov  ax, [seed]       ; ax = old seed
+              mov  bx, 25173        ; the multiplier
+              mul  bx               ; dx:ax = seed * 25173
+                                    ; we keep only ax (low 16 bits),
+                                    ; dx is thrown away
+              add  ax, 13849        ; add the constant
+              mov  [seed], ax       ; remember it for the next call
+
+              pop  dx
+              pop  bx
+              ret                   ; ax = the new seed
+
+; ===============================================================
+; subroutine randrange
+; returns a random number from 0 up to (n - 1), in ax
+; example: n = 4 gives 0, 1, 2 or 3
+; the LOW bits of an LCG are not very random (the lowest bit just
+; goes 0,1,0,1...), so we shift the number right by 8 and use the
+; HIGH bits, then take the remainder of a division by n
+; parameter pushed before the call:  n
+;   [bp+4] = n
+; ===============================================================
+randrange:    push bp
+              mov  bp, sp
+              push bx
+              push cx
+              push dx
+
+              call random           ; ax = new seed (0 to 65535)
+              mov  cl, 8
+              shr  ax, cl           ; ax = high byte only (0 to 255)
+              xor  dx, dx           ; zero the upper half of dividend
+              mov  bx, [bp+4]       ; bx = n
+              div  bx               ; ax = ax / n, dx = remainder
+              mov  ax, dx           ; remainder is 0 to n-1, return it
+
+              pop  dx
+              pop  cx
+              pop  bx
+              pop  bp
+              ret  2                ; 1 parameter x 2 bytes = 2 bytes
+
+ ;-------------step 5-------
+
+ ;-------------step 6-------
+
+ ; ===============================================================
+; subroutine spawntrain
+; tries to put ONE new train on an entrance
+;   1. snapshot fills the occupied array from the current positions
+;   2. a random entrance (0 or 1) is chosen
+;   3. if a train already stands on that entrance, we do nothing
+;   4. a random destination letter is chosen from that entrance
+;   5. the first free train slot is filled and the train is drawn
+; takes no parameters
+; ===============================================================
+spawntrain:   push ax
+              push bx
+              push cx
+              push dx
+              push si
+
+              call snapshot         ; occupied = where trains stand now
+
+              mov  ax, 2
+              push ax               ; n = 2
+              call randrange        ; ax = 0 or 1 (which entrance)
+              mov  bx, ax           ; bx = entrance number
+              mov  dh, [entrances+bx] ; dh = node number of the entrance
+
+              mov  al, dh           ; al = entrance node
+              xor  ah, ah           ; ax = entrance node
+              mov  si, ax           ; si = index into occupied
+              cmp  byte [occupied+si], 0 ; is the entrance free?
+              jne  spdone           ; no, skip this spawn (no penalty)
+
+              mov  ax, 4
+              push ax               ; n = 4
+              call randrange        ; ax = 0 to 3 (which letter)
+              shl  bx, 1            ; bx = entrance * 2
+              shl  bx, 1            ; bx = entrance * 4 (row of dests)
+              add  bx, ax           ; bx = position inside dests
+              mov  dl, [dests+bx]   ; dl = destination letter
+
+              mov  si, trains       ; si points to slot 0
+              mov  cx, 8            ; we look at all 8 slots
+spfind:       cmp  byte [si], 0     ; is this slot free?
+              je   spfound          ; yes, use it
+              add  si, 5            ; no, next slot (5 bytes)
+              loop spfind           ; repeat for all slots
+              jmp  spdone           ; all 8 slots full, skip
+
+spfound:      mov  byte [si], 1     ; active = 1
+              mov  [si+1], dh       ; node = the entrance
+              mov  [si+2], dl       ; dest = the chosen letter
+              mov  al, [normalinterval] ; current interval for new trains
+              mov  [si+3], al       ; interval
+              mov  [si+4], al       ; counter starts equal to interval
+              call drawtrains       ; show the new train on screen
+
+spdone:       pop  si
+              pop  dx
+              pop  cx
+              pop  bx
+              pop  ax
+              ret
+
+ ;-------------step 6-------
+
+ ;-------------step 7-------
+
+ ; ===============================================================
+; subroutine movetrain
+; handles ONE train for ONE movement update
+; input: si = address of the train slot (not a stack parameter,
+;        movetrains keeps it in si while it walks the 8 slots)
+;   1. counter goes down by 1; if it is not 0 yet the train stays
+;   2. counter is set to interval again
+;   3. the next node is next0, or next1 if the train stands on a
+;      switch whose state is 1
+;   4. next node is a station: the train always enters, score or
+;      mistake is counted, and the train is removed
+;   5. next node is a normal cell: the train moves only if the cell
+;      was empty at the start of the update (occupied = 0) and nobody
+;      claimed it in this update (claimed = 0); otherwise it waits
+;      and there is no penalty
+; ===============================================================
+movetrain:    push ax
+              push bx
+              push di
+
+              dec  byte [si+4]      ; one tick less to wait
+              jz   mvgo             ; counter reached 0, time to move
+              jmp  mvdone           ; not zero yet, the train stays
+                                    ; (jmp can reach far, jnz could not)
+mvgo:
+
+              mov  al, [si+3]       ; al = interval of this train
+              mov  [si+4], al       ; counter = interval again
+
+              ; ---- find the node where the train stands now
+              xor  ax, ax           ; ax = 0
+              mov  al, [si+1]       ; ax = current node number
+              mov  di, ax
+              shl  di, 1            ; node * 2
+              shl  di, 1            ; node * 4
+              shl  di, 1            ; node * 8 (every node is 8 bytes)
+              add  di, track        ; di = address of the current node
+
+              ; ---- decide which node comes next
+              mov  al, [di+4]       ; al = next0 (the normal way on)
+              cmp  byte [di+3], 1   ; is the current node a switch?
+              jne  mvhavenext       ; no, next0 is the answer
+              xor  bx, bx           ; bx = 0
+              mov  bl, [di+6]       ; bx = switch number (0 to 3)
+              cmp  byte [switchstate+bx], 0 ; is the switch in state 0?
+              je   mvhavenext       ; yes, next0 is the answer
+              mov  al, [di+5]       ; no, state 1 so use next1
+
+mvhavenext:   xor  ah, ah           ; ax = next node number
+              mov  bx, ax           ; bx = next node (index for arrays)
+              mov  di, ax
+              shl  di, 1
+              shl  di, 1
+              shl  di, 1            ; di = next node * 8
+              add  di, track        ; di = address of the next node
+
+              cmp  byte [di+3], 2   ; is the next node a station?
+              jne  mvcell           ; no, it is a normal cell
+
+              ; ---- the train reaches a station
+              mov  al, [di+7]       ; al = letter of this station
+              cmp  al, [si+2]       ; same as the train's destination?
+              jne  mvwrong          ; no, wrong station
+              inc  word [score]     ; yes, one point
+              jmp  mvarrived
+mvwrong:      inc  word [mistakes]  ; wrong station, one mistake
+mvarrived:    mov  byte [si], 0     ; remove the train (slot is free)
+              mov  byte [moved], 1  ; screen must be redrawn
+              call drawstatus       ; show the new score / mistakes
+              jmp  mvdone
+
+              ; ---- the next node is a normal cell
+mvcell:       cmp  byte [occupied+bx], 0 ; was it empty at the start?
+              jne  mvdone           ; no, wait for the next update
+              cmp  byte [claimed+bx], 0  ; did another train claim it?
+              jne  mvdone           ; yes, wait for the next update
+              mov  byte [claimed+bx], 1  ; claim the cell
+              mov  [si+1], bl       ; the train moves to the new node
+              mov  byte [moved], 1  ; screen must be redrawn
+
+mvdone:       pop  di
+              pop  bx
+              pop  ax
+              ret
+
+; ===============================================================
+; subroutine movetrains
+; the whole movement update, called once per game tick
+;   1. snapshot: occupied = where trains stand now, claimed = zeros
+;   2. movetrain is called for every active slot
+;   3. if anything changed, the screen is redrawn in this order:
+;      track (erases the old train letters), switches (colours and
+;      boxes), trains (letters on top of everything)
+; takes no parameters
+; ===============================================================
+movetrains:   push cx
+              push si
+
+              call snapshot         ; occupied filled, claimed cleared
+              mov  byte [moved], 0  ; nothing has changed yet
+
+              mov  si, trains       ; si points to slot 0
+              mov  cx, 8            ; we look at all 8 slots
+
+mtloop:       cmp  byte [si], 0     ; is this slot free?
+              je   mtnext           ; yes, nothing to move
+              call movetrain        ; handle this train (si = slot)
+mtnext:       add  si, 5            ; next slot (5 bytes)
+              loop mtloop           ; repeat for all 8 slots
+
+              cmp  byte [moved], 0  ; did anything change?
+              je   mtend            ; no, leave the screen alone
+              call drawtrack        ; redraw all cells (erases old trains)
+              call drawswitches     ; switch boxes and route colours
+              call drawtrains       ; trains on top
+
+mtend:        pop  si
+              pop  cx
+              ret
+
+ ;-------------step 7-------
+
+ ;-------------start-------
+
+ start:        call   clrscr             ; clear the screen
+              call   drawtrack          ; draw the track from the table
+              call   drawlabels         ; Entry 1, Entry 2, Station A-D
+              call   drawswitches       ; switch boxes and route colours
+              call   drawstatus         ; status bar on the last row
+
+              ;-------step 4 ----
+
+                            call   cleartrains        ; start with no trains at all
+
+             
+
+              ;-------step 4 ----
+              ;-------step 5 ----
+
+                            call   seedrandom         ; give the generator a fresh seed
+                                        ; (KEEP this line, delete the test)
+
+            
+              ;-------step 5----
+              call   hookints           ; install our timer and keyboard ISRs
+
+; ---------------------------------------------------------------
+; main loop: the ISRs only set flags and counters,
+; the real work (drawing) is done here
+; ---------------------------------------------------------------
+mainloop:     cmp    word [redrawflag], 0 ; was a switch toggled?
+              je     noredraw           ; no, skip the redraw
+              mov    word [redrawflag], 0 ; yes, clear the flag first
+              call   drawswitches       ; redraw only the switches
+              call   drawtrains         ; put the trains back on top
+
+noredraw:     cmp    word [tickcount], 0  ; is there a tick waiting?
+              je     notick             ; no, skip
+
+              ;----step 7----
+              dec    word [tickcount]   ; yes, use up one tick
+              call   movetrains         ; movement update (every tick)
+              inc    word [spawntimer]  ; one more tick since last spawn try
+              cmp    word [spawntimer], spawngap ; time to try a spawn?
+              jb     notick             ; not yet, go on
+              mov    word [spawntimer], 0 ; yes, restart the count
+              call   spawntrain         ; try to put a train on an entrance
+
+              ;-----step 7--------
+notick:       mov    ax, [elapsedticks] ; total ticks so far
+              xor    dx, dx             ; zero the upper half of dividend
+              mov    bx, 18             ; timer ticks about 18 times a second
+              div    bx                 ; ax = seconds
+              cmp    ax, [seconds]      ; did the second number change?
+              je     nosecchange        ; no, nothing to redraw
+              mov    [seconds], ax      ; yes, remember the new seconds
+              call   drawstatus         ; redraw the status bar
+
+nosecchange:  cmp    word [quitflag], 0 ; was Esc pressed?
+              je     mainloop           ; no, keep running the loop
+
+              call   unhookints         ; restore both old vectors
+
+              mov    ax, 0x4c00         ; terminate program
+              int    0x21
