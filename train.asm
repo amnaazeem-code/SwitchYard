@@ -1771,29 +1771,15 @@ menudone:     call clrscr           ; erase the menu before the game
  ;-------------step 10-------
  ;-------------start-------
 
- start:       call   showmenu
-              call   clrscr             ; clear the screen
-              call   drawtrack          ; draw the track from the table
-              call   drawlabels         ; Entry 1, Entry 2, Station A-D
-              call   drawswitches       ; switch boxes and route colours
-              call   drawstatus         ; status bar on the last row
+  ;-------------step 12-------
 
-              ;-------step 4 ----
+ start:        call   showmenu           ; step 10: menu sets mode (1 or 2)
+              call   seedrandom         ; step 5: different trains on every run
+              call   hookints           ; step 3: install timer and keyboard ISRs
 
-                            call   cleartrains        ; start with no trains at all
+newgame:      call   resetgame          ; step 12: clean start (also used by replay)
 
-             
-
-              ;-------step 4 ----
-              ;-------step 5 ----
-
-                            call   seedrandom         ; give the generator a fresh seed
-                                        ; (KEEP this line, delete the test)
-
-            
-              ;-------step 5----
-              call   hookints           ; install our timer and keyboard ISRs
-
+ ;-------------step 12-------
 ; ---------------------------------------------------------------
 ; main loop: the ISRs only set flags and counters,
 ; the real work (drawing) is done here
@@ -1839,8 +1825,24 @@ notick:       mov    ax, [elapsedticks] ; total ticks so far
 
 nosecchange:  cmp    word [quitflag], 0 ; was Esc pressed?
               je     mainloop           ; no, keep running the loop
+              jmp    exitgame           ; step 12: leave through one exit path
 
-              call   unhookints         ; restore both old vectors
+ ;-------------step 12-------
+; ===============================================================
+; exitgame
+; the ONLY way out of the game (Esc on the game screen or on the
+; result screen both come here)
+;   1. restore the old INT 08h and INT 09h vectors
+;   2. set text mode 80x25 again, which clears the screen and
+;      moves the cursor to the top left, so DOS starts clean
+;   3. return to DOS with code 0
+; ===============================================================
+exitgame:     call   unhookints         ; restore both old vectors
+
+              mov    ax, 0x0003         ; text mode 80x25, clears the screen
+              int    0x10               ; BIOS video service
 
               mov    ax, 0x4c00         ; terminate program
               int    0x21
+
+ ;-------------step 12-------
