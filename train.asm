@@ -405,7 +405,29 @@ moved:        db 0                  ; 1 = at least one train moved or was
 
 ;-------step 7-----
 
+;-------step 9-----
 
+; ---------------------------------------------------------------
+; step 9 data: speed-up
+; speedupdone is 0 until the speed-up has happened, then 1
+; so the speed-up happens only ONCE in a game
+; ---------------------------------------------------------------
+speedupdone:  dw 0                  ; 0 = still normal speed, 1 = already sped up
+
+;-------step 9-----
+
+
+;-------step 10-----
+
+; ---------------------------------------------------------------
+; step 10 data: menu text, every string ends with a zero byte
+; ---------------------------------------------------------------
+msgtitle:     db 'SWITCHYARD', 0           ; title of the menu
+msgopt1:      db '1. Single Player', 0     ; option 1
+msgopt2:      db '2. Two-Player Co-op', 0  ; option 2
+msgpress:     db 'Press 1 or 2 (Esc = exit)', 0 ; how to choose
+
+;-------step 10-----
 
 ;----step 2-----
 ; subroutine to clear the screen
@@ -1470,9 +1492,154 @@ mtend:        pop  si
 
  ;-------------step 7-------
 
+  ;-------------step 9-------
+
+ ; ===============================================================
+; subroutine checkspeedup
+; when the score reaches the target, the game gets faster ONE time:
+;   single player: score 6   co-op: score 12
+;   1. every active train gets interval = interval / 2 (minimum 1)
+;   2. normalinterval is halved too, so new trains are fast as well
+; the counter of each train is left alone, it counts down as before
+; takes no parameters
+; ===============================================================
+checkspeedup: push ax               ; save the registers we change
+              push cx
+              push si
+
+              cmp  word [speedupdone], 0 ; did we already speed up?
+              jne  csdone           ; yes, never do it twice
+
+              mov  ax, 6           ; target score for single player 
+
+              cmp  word [mode], 1   ; are we in single player?
+              je   cshavetarget     ; yes, the target is 6
+              mov  ax, 12           ; no, co-op, the target is 12
+
+cshavetarget: cmp  [score], ax      ; has the score reached the target?
+              jb   csdone           ; no, keep the normal speed
+
+              mov  word [speedupdone], 1 ; remember that we sped up
+
+              mov  si, trains       ; si points to slot 0
+              mov  cx, 8            ; we look at all 8 slots
+
+csloop:       cmp  byte [si], 0     ; is this slot free?
+              je   csnext           ; yes, nothing to change
+
+              mov  al, [si+3]       ; al = interval of this train
+              shr  al, 1            ; al = interval / 2
+              cmp  al, 1            ; is it at least 1?
+              jae  csstore          ; yes, keep it
+              mov  al, 1            ; no, a train needs at least 1 tick
+csstore:      mov  [si+3], al       ; store the new interval
+
+csnext:       add  si, 5            ; next slot (5 bytes)
+              loop csloop           ; repeat for all 8 slots
+
+              mov  al, [normalinterval] ; interval for new trains
+              shr  al, 1            ; halve it
+              cmp  al, 1            ; is it at least 1?
+              jae  csnormal         ; yes, keep it
+              mov  al, 1            ; no, minimum 1
+csnormal:     mov  [normalinterval], al ; store the new value
+
+csdone:       pop  si               ; give back the registers
+              pop  cx
+              pop  ax
+              ret
+
+ ;-------------step 9-------
+
+  ;-------------step 10-------
+
+ ; ===============================================================
+; subroutine showmenu
+; shows the start menu and waits for a choice:
+;   1 = single player  -> mode = 1
+;   2 = two-player co-op -> mode = 2
+;   Esc = leave the program before the game starts
+; uses the BIOS keyboard service (int 16h, ah = 0 waits for a key,
+; the key's ascii code comes back in al)
+; this runs BEFORE hookints, so the BIOS handles the keys here
+; takes no parameters
+; ===============================================================
+showmenu:     push ax               ; save the register we change
+
+              call clrscr           ; clean screen for the menu
+
+              ; ---- the title, yellow, centred around column 35
+              mov  ax, 35
+              push ax               ; x = 35
+              mov  ax, 5
+              push ax               ; y = 5
+              mov  ax, 0x0e
+              push ax               ; attribute = yellow
+              mov  ax, msgtitle
+              push ax               ; string offset
+              call printstr
+
+              ; ---- option 1, light grey
+              mov  ax, 30
+              push ax               ; x = 30
+              mov  ax, 9
+              push ax               ; y = 9
+              mov  ax, 0x07
+              push ax               ; attribute = grey
+              mov  ax, msgopt1
+              push ax
+              call printstr
+
+              ; ---- option 2, light grey
+              mov  ax, 30
+              push ax               ; x = 30
+              mov  ax, 11
+              push ax               ; y = 11
+              mov  ax, 0x07
+              push ax
+              mov  ax, msgopt2
+              push ax
+              call printstr
+
+              ; ---- how to choose, light cyan
+              mov  ax, 25
+              push ax               ; x = 25
+              mov  ax, 15
+              push ax               ; y = 15
+              mov  ax, 0x0b
+              push ax
+              mov  ax, msgpress
+              push ax
+              call printstr
+
+menuask:      xor  ax, ax           ; ah = 0 means "wait for a key"
+              int  0x16             ; al = ascii code of the key pressed
+              cmp  al, '1'          ; was it 1?
+              je   menusingle       ; yes, single player
+              cmp  al, '2'          ; was it 2?
+              je   menucoop         ; yes, co-op
+              cmp  al, 27           ; was it Esc?
+              je   menuesc          ; yes, leave the program
+              jmp  menuask          ; any other key, ask again
+
+menusingle:   mov  word [mode], 1   ; single player
+              jmp  menudone
+
+menucoop:     mov  word [mode], 2   ; two-player co-op
+              jmp  menudone
+
+menuesc:      mov  ax, 0x4c00       ; terminate the program now,
+              int  0x21             ; no interrupts were hooked yet
+
+menudone:     call clrscr           ; erase the menu before the game
+              pop  ax               ; give back the register
+              ret
+
+ ;-------------step 10-------
  ;-------------start-------
 
- start:        call   clrscr             ; clear the screen
+ start:       call   showmenu
+              call   clrscr             ; clear the screen
               call   drawtrack          ; draw the track from the table
               call   drawlabels         ; Entry 1, Entry 2, Station A-D
               call   drawswitches       ; switch boxes and route colours
@@ -1510,6 +1677,7 @@ noredraw:     cmp    word [tickcount], 0  ; is there a tick waiting?
               ;----step 7----
               dec    word [tickcount]   ; yes, use up one tick
               call   movetrains         ; movement update (every tick)
+              call   checkspeedup       ; step 9: speed up once at the target score
               inc    word [spawntimer]  ; one more tick since last spawn try
               cmp    word [spawntimer], spawngap ; time to try a spawn?
               jb     notick             ; not yet, go on
