@@ -405,6 +405,19 @@ moved:        db 0                  ; 1 = at least one train moved or was
 
 ;-------step 7-----
 
+;-------step 11-----
+
+; ---------------------------------------------------------------
+; step 11 data: win, lose and replay
+; gameover = 0 while playing, 1 = won, 2 = lost
+; ---------------------------------------------------------------
+gameover:     dw 0                  ; 0 = playing, 1 = won, 2 = lost
+msgwin:       db 'YOU WIN!', 0      ; shown when the win target is reached
+msglose:      db 'GAME OVER - too many mistakes', 0 ; shown when mistakes hit 5
+msgkeys:      db 'R = Replay, ESC = Exit', 0        ; choices on the result screen
+
+;-------step 11-----
+
 ;-------step 9-----
 
 ; ---------------------------------------------------------------
@@ -1551,6 +1564,126 @@ csdone:       pop  si               ; give back the registers
 
  ;-------------step 9-------
 
+  ;-------------step 11-------
+
+ ; ===============================================================
+; subroutine checkresult
+; looks at the score and mistakes after every movement update
+;   win : score >= 10 (single player) or >= 20 (co-op)
+;   lose: mistakes >= 5
+; sets gameover to 1 (won) or 2 (lost), leaves it 0 if still playing
+; takes no parameters
+; ===============================================================
+checkresult:  push ax               ; save the register we change
+
+              mov  ax, 10           ; win target for single player
+              cmp  word [mode], 1   ; are we in single player?
+              je   crcheckwin       ; yes, 10 is the target
+              mov  ax, 20           ; no, co-op, the target is 20
+
+crcheckwin:   cmp  [score], ax      ; has the score reached the target?
+              jb   crcheklose       ; no, check the mistakes instead
+              mov  word [gameover], 1 ; yes, the player won
+              jmp  crdone
+
+crcheklose:   cmp  word [mistakes], 5 ; 5 mistakes means a loss
+              jb   crdone           ; fewer than 5, keep playing
+              mov  word [gameover], 2 ; 5 or more, the player lost
+
+crdone:       pop  ax               ; give back the register
+              ret
+
+; ===============================================================
+; subroutine showresult
+; clears the screen and shows the result (win or lose) with the
+; choices. waits until the player presses R (replay) or Esc (exit)
+;   Esc is caught by the keyboard ISR, so we check quitflag
+;   R is passed on to the BIOS buffer, so we read it with int 16h
+; when this returns, quitflag = 1 means exit, otherwise replay
+; takes no parameters
+; ===============================================================
+showresult:   push ax
+
+              call clrscr           ; clean the screen for the result
+
+              ; ---- the win or lose message, yellow, row 10
+              mov  ax, 30
+              push ax               ; x = 30
+              mov  ax, 10
+              push ax               ; y = 10
+              mov  ax, 0x0e
+              push ax               ; attribute = yellow
+              cmp  word [gameover], 1 ; did we win?
+              jne  rsshowlose       ; no, show the lose text
+              mov  ax, msgwin
+              jmp  rsshowmsg
+rsshowlose:   mov  ax, msglose
+rsshowmsg:    push ax               ; string offset
+              call printstr
+
+              ; ---- the choices, light cyan, row 13
+              mov  ax, 27
+              push ax               ; x = 27
+              mov  ax, 13
+              push ax               ; y = 13
+              mov  ax, 0x0b
+              push ax               ; attribute = light cyan
+              mov  ax, msgkeys
+              push ax
+              call printstr
+
+rswait:       cmp  word [quitflag], 0 ; was Esc pressed?
+              jne  rsdone           ; yes, leave at once
+
+              mov  ah, 1            ; ah = 1: is a key waiting?
+              int  0x16             ; ZF = 1 means no key yet
+              jz   rswait           ; no key, keep waiting
+
+              xor  ah, ah           ; ah = 0: take the key out of the buffer
+              int  0x16             ; al = ascii code of the key
+              cmp  al, 'r'          ; lower case r?
+              je   rsdone           ; yes, replay
+              cmp  al, 'R'          ; upper case R?
+              je   rsdone           ; yes, replay
+              jmp  rswait           ; any other key, keep waiting
+
+rsdone:       pop  ax               ; give back the register
+              ret
+
+; ===============================================================
+; subroutine resetgame
+; starts a new game with the same mode (single or co-op)
+; clears the score, mistakes, clock, trains and switches, then
+; draws the whole screen again
+; takes no parameters
+; ===============================================================
+resetgame:    push ax
+
+              mov  word [score], 0          ; no points yet
+              mov  word [mistakes], 0       ; no mistakes yet
+              mov  word [seconds], 0        ; clock back to 0
+              mov  word [elapsedticks], 0   ; clock back to 0
+              mov  word [tickcount], 0      ; no ticks waiting
+              mov  word [spawntimer], 0     ; spawn timer starts again
+              mov  word [gameover], 0       ; playing again
+              mov  word [speedupdone], 0    ; normal speed again (step 9)
+              mov  byte [normalinterval], 6 ; original interval (step 9)
+              mov  word [redrawflag], 0     ; nothing to redraw yet
+              mov  word [switchstate], 0    ; switches 1 and 2 to state 0
+              mov  word [switchstate+2], 0  ; switches 3 and 4 to state 0
+
+              call cleartrains      ; all trains gone, helper arrays cleared
+              call clrscr           ; clean the screen
+              call drawtrack        ; the track again
+              call drawlabels       ; the labels again
+              call drawswitches     ; the switch boxes in their state 0
+              call drawstatus       ; score 0, mistakes 0, time 0
+
+              pop  ax
+              ret
+
+ ;-------------step 11-------
+
   ;-------------step 10-------
 
  ; ===============================================================
@@ -1678,6 +1811,16 @@ noredraw:     cmp    word [tickcount], 0  ; is there a tick waiting?
               dec    word [tickcount]   ; yes, use up one tick
               call   movetrains         ; movement update (every tick)
               call   checkspeedup       ; step 9: speed up once at the target score
+
+              call   checkresult        ; step 11: has the game been won or lost?
+              cmp    word [gameover], 0 ; 0 = still playing
+              je     keepplaying        ; yes, carry on as normal
+              call   showresult         ; show the result, wait for R or Esc
+              cmp    word [quitflag], 0 ; did the player press Esc?
+              jne    notick             ; yes, go to the quit check
+              call   resetgame          ; R was pressed, start a new game
+              jmp    notick             ; skip the spawn for this tick
+keepplaying:
               inc    word [spawntimer]  ; one more tick since last spawn try
               cmp    word [spawntimer], spawngap ; time to try a spawn?
               jb     notick             ; not yet, go on
